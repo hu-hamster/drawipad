@@ -1,11 +1,10 @@
 import Foundation
-import PencilKit
 
-/// Mac 端数据仓库：项目/页面元数据 + 每页 PKDrawing 文件。
+/// Mac 端数据仓库：项目/文件元数据 + 每个文件的 Excalidraw 场景 JSON。
 /// 全部在主线程访问。
 final class LibraryStore: ObservableObject {
     struct LibraryData: Codable {
-        var version: Int = 1
+        var version: Int = 2
         var folders: [Folder] = []
         var pages: [PageMeta] = []
     }
@@ -13,17 +12,18 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var library = LibraryData()
 
     let root: URL
-    private var pagesDir: URL { root.appendingPathComponent("pages", isDirectory: true) }
+    private var scenesDir: URL { root.appendingPathComponent("scenes", isDirectory: true) }
     private var libraryURL: URL { root.appendingPathComponent("library.json") }
-    private var thumbCache: [UUID: (Date, NSImage)] = [:]
     private var persistWork: DispatchWorkItem?
+    private var sceneSaveWork: DispatchWorkItem?
+    private var pendingSceneSaves: [UUID: String] = [:]
 
     init(root: URL? = nil) {
         let base = root
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("DrawPad", isDirectory: true)
         self.root = base
-        try? FileManager.default.createDirectory(at: pagesDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: scenesDir, withIntermediateDirectories: true)
     }
 
     // MARK: - 加载
@@ -42,15 +42,14 @@ final class LibraryStore: ObservableObject {
     }
 
     private func bootstrap() {
-        let page = PageMeta(name: "第 1 页")
+        let page = PageMeta(name: "未命名画板 1")
         var folder = Folder(name: "我的项目")
         folder.pageIDs = [page.id]
         library = LibraryData(folders: [folder], pages: [page])
-        writeDrawingData(PKDrawing().dataRepresentation(), for: page.id)
+        writeScene("[]", for: page.id)
         persist()
     }
 
-    /// 立即写元数据（文件很小，不需要防抖）。
     private func persist() {
         if let data = try? JSONEncoder().encode(library) {
             try? data.write(to: libraryURL, options: .atomic)
@@ -90,78 +89,37 @@ final class LibraryStore: ObservableObject {
         LibrarySnapshot(folders: library.folders, pages: library.pages)
     }
 
-    // MARK: - 绘制数据
+    // MARK: - 场景数据
 
-    func drawingData(_ pageID: UUID) -> Data? {
-        let url = pagesDir.appendingPathComponent(pageID.uuidString + ".drawing")
-        return try? Data(contentsOf: url)
-    }
-
-    // MARK: 页面底图（图片导入，画在其上）
-
-    func bgImageData(_ pageID: UUID) -> Data? {
-        let url = pagesDir.appendingPathComponent(pageID.uuidString + ".bg.jpg")
+    func sceneJSON(_ pageID: UUID) -> String? {
+        let url = scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw")
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
-        return data
+        return String(data: data, encoding: .utf8)
     }
 
-    func bgImage(_ pageID: UUID) -> NSImage? {
-        guard let data = bgImageData(pageID) else { return nil }
-        return NSImage(data: data)
+    private func writeScene(_ json: String, for pageID: UUID) {
+        let url = scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw")
+        try? Data(json.utf8).write(to: url, options: .atomic)
     }
 
-    /// 保存底图；空 data 移除底图。
-    func saveBgImage(_ pageID: UUID, imageData: Data) {
-        let url = pagesDir.appendingPathComponent(pageID.uuidString + ".bg.jpg")
-        if imageData.isEmpty {
-            try? FileManager.default.removeItem(at: url)
-        } else {
-            try? imageData.write(to: url, options: .atomic)
+    /// 防抖保存场景（150ms），高频编辑不落盘。
+    func scheduleSaveScene(_ pageID: UUID, json: String) {
+        pendingSceneSaves[pageID] = json
+        sceneSaveWork?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let saves = self.pendingSceneSaves
+            self.pendingSceneSaves.removeAll(keepingCapacity: true)
+            for (id, json) in saves {
+                self.writeScene(json, for: id)
+                if let index = self.library.pages.firstIndex(where: { $0.id == id }) {
+                    self.library.pages[index].updatedAt = Date()
+                }
+            }
+            self.schedulePersist()
         }
-        thumbCache[pageID] = nil
-        schedulePersist()
-    }
-
-    private func removeBgFile(_ pageID: UUID) {
-        try? FileManager.default.removeItem(at: pagesDir.appendingPathComponent(pageID.uuidString + ".bg.jpg"))
-    }
-
-    func drawing(_ pageID: UUID) -> PKDrawing? {
-        guard let data = drawingData(pageID) else { return nil }
-        return try? PKDrawing(data: data)
-    }
-
-    func strokeCount(_ pageID: UUID) -> Int {
-        drawing(pageID)?.strokes.count ?? 0
-    }
-
-    private func writeDrawingData(_ data: Data, for pageID: UUID) {
-        let url = pagesDir.appendingPathComponent(pageID.uuidString + ".drawing")
-        try? data.write(to: url, options: .atomic)
-    }
-
-    private func touchMeta(_ pageID: UUID) {
-        if let index = library.pages.firstIndex(where: { $0.id == pageID }) {
-            library.pages[index].updatedAt = Date()
-        }
-        thumbCache[pageID] = nil
-        schedulePersist()
-    }
-
-    /// 追加一笔，返回该 PKStroke。
-    func appendStroke(pageID: UUID, strokeData: Data) -> PKStroke? {
-        guard let stroke = (try? PKDrawing(data: strokeData))?.strokes.first else { return nil }
-        let drawing = self.drawing(pageID) ?? PKDrawing()
-        let updated = PKDrawing(strokes: drawing.strokes + [stroke])
-        writeDrawingData(updated.dataRepresentation(), for: pageID)
-        touchMeta(pageID)
-        return stroke
-    }
-
-    /// 整页替换（iPad 撤销/橡皮后的重传）。
-    func replaceDrawing(pageID: UUID, drawingData: Data) {
-        writeDrawingData(drawingData, for: pageID)
-        touchMeta(pageID)
+        sceneSaveWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
     }
 
     // MARK: - 文件夹管理
@@ -190,25 +148,27 @@ final class LibraryStore: ObservableObject {
     func deleteFolder(_ id: UUID) {
         guard let folder = folder(id) else { return }
         for pageID in folder.pageIDs {
-            try? FileManager.default.removeItem(at: pagesDir.appendingPathComponent(pageID.uuidString + ".drawing"))
-            removeBgFile(pageID)
+            try? FileManager.default.removeItem(at: scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw"))
         }
         library.folders.removeAll { $0.id == id }
         library.pages.removeAll { folder.pageIDs.contains($0.id) }
         persist()
     }
 
-    // MARK: - 页面管理
+    // MARK: - 文件管理
 
     @discardableResult
-    func createPage(folderID: UUID, afterPageID: UUID? = nil, size: CGSize = CGSize(width: 1366, height: 1024)) -> PageMeta {
+    func createPage(folderID: UUID, afterPageID: UUID? = nil, name: String? = nil) -> PageMeta {
         let existingNames = Set(pages(in: folderID).map(\.name))
         var index = existingNames.count + 1
-        while existingNames.contains("第 \(index) 页") {
+        let baseName = name ?? "画板"
+        var finalName = name ?? "\(baseName) 1"
+        while existingNames.contains(finalName) {
             index += 1
+            finalName = "\(baseName) \(index)"
         }
-        let page = PageMeta(name: "第 \(index) 页", width: size.width, height: size.height)
-        writeDrawingData(PKDrawing().dataRepresentation(), for: page.id)
+        let page = PageMeta(name: finalName)
+        writeScene("[]", for: page.id)
         library.pages.append(page)
         if let folderIndex = library.folders.firstIndex(where: { $0.id == folderID }) {
             if let after = afterPageID,
@@ -222,7 +182,7 @@ final class LibraryStore: ObservableObject {
         return page
     }
 
-    /// 删除页面，返回删除后应显示的相邻页（同文件夹）。
+    /// 删除文件，返回删除后应显示的相邻文件（同文件夹）。
     @discardableResult
     func deletePage(_ id: UUID) -> UUID? {
         guard let folderIndex = library.folders.firstIndex(where: { $0.pageIDs.contains(id) }) else {
@@ -232,8 +192,7 @@ final class LibraryStore: ObservableObject {
         let index = ids.firstIndex(of: id) ?? 0
         library.folders[folderIndex].pageIDs.removeAll { $0 == id }
         library.pages.removeAll { $0.id == id }
-        try? FileManager.default.removeItem(at: pagesDir.appendingPathComponent(id.uuidString + ".drawing"))
-        removeBgFile(id)
+        try? FileManager.default.removeItem(at: scenesDir.appendingPathComponent(id.uuidString + ".excalidraw"))
         persist()
         let remaining = library.folders[folderIndex].pageIDs
         if index < remaining.count {
@@ -247,29 +206,5 @@ final class LibraryStore: ObservableObject {
               let index = library.pages.firstIndex(where: { $0.id == id }) else { return }
         library.pages[index].name = name
         persist()
-    }
-
-    // MARK: - 缩略图
-
-    func thumbnail(for meta: PageMeta) -> NSImage? {
-        if let cached = thumbCache[meta.id], cached.0 == meta.updatedAt {
-            return cached.1
-        }
-        let drawing = drawing(meta.id)
-        let bg = bgImage(meta.id)
-        guard drawing != nil || bg != nil else { return nil }
-        let target: CGFloat = 160
-        let scale = max(min(target / meta.pageSize.width, target / meta.pageSize.height), 0.2)
-        guard
-            let rendered = PageRenderer.composite(
-                drawing: drawing,
-                background: bg,
-                pageSize: meta.pageSize,
-                padding: 10,
-                scale: scale
-            )
-        else { return nil }
-        thumbCache[meta.id] = (meta.updatedAt, rendered.image)
-        return rendered.image
     }
 }

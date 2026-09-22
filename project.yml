@@ -17,6 +17,9 @@ targets:
     sources:
       - path: Core
       - path: MacApp/Sources
+      - path: SharedWeb
+        buildPhase: resources
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hujing.drawpad.mac
@@ -44,11 +47,15 @@ targets:
     sources:
       - path: Core
       - path: PadApp/Sources
+      - path: SharedWeb
+        buildPhase: resources
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hujing.drawpad.pad
         PRODUCT_NAME: DrawPad
         TARGETED_DEVICE_FAMILY: "2"
+        DEVELOPMENT_TEAM: QH45539LSY
     info:
       path: PadApp/Info.plist
       properties:

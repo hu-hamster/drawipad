@@ -1,14 +1,5 @@
 import Foundation
-import PencilKit
 import SwiftUI
-
-/// Mac 端进行中的实时预览笔迹（未提交的采集点）。
-struct LiveStroke: Identifiable {
-    let id: UUID
-    var color: NSColor
-    var width: CGFloat
-    var points: [LivePoint]
-}
 
 /// 重命名目标。
 enum RenameTarget: Identifiable {
@@ -21,9 +12,14 @@ enum RenameTarget: Identifiable {
             return id
         }
     }
+
+    var isFolder: Bool {
+        if case .folder = self { return true }
+        return false
+    }
 }
 
-/// Mac 端总状态：数据仓库 + 服务端 + 画布显示。
+/// Mac 端总状态：数据仓库 + 服务端 + 嵌入式 Excalidraw 画布。
 /// 全部在主线程。
 final class MacAppModel: ObservableObject {
     struct PairingPrompt: Identifiable {
@@ -38,51 +34,28 @@ final class MacAppModel: ObservableObject {
 
     @Published var selectedFolderID: UUID?
     @Published var selectedPageID: UUID?
-    @Published var displayedDrawing = PKDrawing()
-    /// displayedDrawing 每次内容变化时 +1，驱动画布刷新。
-    @Published var drawingRevision = 0
-    /// 当前页底图。
-    @Published var displayedBgImage: NSImage?
-    /// 画板缩放百分比（相对"适配窗口"）。
-    @Published var zoomPercent = 100
-    @Published var liveStroke: LiveStroke?
     @Published var pairing: PairingPrompt?
     @Published var clientName: String?
     @Published var renameTarget: RenameTarget?
     @Published var renameText = ""
     @Published var confirmDeleteCurrent = false
-
-    /// 预览笔迹的安全清除定时（笔画结束后若真实笔迹未到达则清掉）。
-    private var liveClearWork: DispatchWorkItem?
+    @Published var webViewReady = false
 
     /// 调试参数：自动接受配对（本地自动化测试用，正常使用不传）。
     private let autoAcceptPairing = ProcessInfo.processInfo.arguments.contains("--auto-accept-pairing")
 
-    /// 当前画板视图（浮动缩放控件调用）。
-    weak var boardView: BoardCanvasView?
+    weak var webView: BoardWebView?
 
-    func boardZoomIn() {
-        boardView?.zoomIn()
-    }
-
-    func boardZoomOut() {
-        boardView?.zoomOut()
-    }
-
-    func boardFit() {
-        boardView?.fit()
-    }
+    /// 本地场景变化 → 推送 iPad 的防抖。
+    private var scenePushWork: DispatchWorkItem?
 
     init() {
         store.loadIfNeeded()
-        // 优先选中最后一个"有页面"的文件夹，避免打开即空状态
-        let folder = store.folders.last(where: { !$0.pageIDs.isEmpty })
-            ?? store.folders.last
+        let folder = store.folders.last(where: { !$0.pageIDs.isEmpty }) ?? store.folders.last
         if let folder {
             selectedFolderID = folder.id
             selectedPageID = folder.pageIDs.last
         }
-        loadDisplayed()
         startServer()
     }
 
@@ -90,91 +63,51 @@ final class MacAppModel: ObservableObject {
         selectedPageID.flatMap { store.pageMeta($0) }
     }
 
-    // MARK: - 浮动工具条辅助
+    // MARK: - 画布（WebView）回调
 
-    var pageIndicatorText: String {
-        guard let folderID = selectedFolderID else { return "—" }
-        let metas = store.pages(in: folderID)
-        guard let id = selectedPageID,
-              let index = metas.firstIndex(where: { $0.id == id }) else {
-            return "— / \(metas.count)"
+    func handleWebViewReady() {
+        webViewReady = true
+        showCurrentSceneInWebView()
+    }
+
+    /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
+    func handleLocalSceneChange(_ json: String) {
+        guard let id = selectedPageID else { return }
+        store.scheduleSaveScene(id, json: json)
+        guard server.hasClient else { return }
+        scenePushWork?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.server.send(.sceneUpdate(fileID: id, elementsJSON: json))
         }
-        return "\(index + 1) / \(metas.count)"
+        scenePushWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
     }
 
-    func pageIndex(_ page: PageMeta) -> Int {
-        guard let folderID = selectedFolderID else { return -1 }
-        return store.pages(in: folderID).firstIndex { $0.id == page.id } ?? -1
+    private func showCurrentSceneInWebView() {
+        let scene = selectedPageID.flatMap { store.sceneJSON($0) } ?? "[]"
+        webView?.applyScene(scene)
     }
 
-    func pageCount(in page: PageMeta) -> Int {
-        store.pages(in: store.folderID(containing: page.id) ?? UUID()).count
-    }
-
-    func prevPageFromUI() {
-        guard let folderID = selectedFolderID else { return }
-        let metas = store.pages(in: folderID)
-        guard let id = selectedPageID,
-              let index = metas.firstIndex(where: { $0.id == id }),
-              index > 0 else { return }
-        selectPage(metas[index - 1].id, remote: false)
-    }
-
-    func nextPageFromUI() {
-        guard let folderID = selectedFolderID else { return }
-        let metas = store.pages(in: folderID)
-        guard let id = selectedPageID,
-              let index = metas.firstIndex(where: { $0.id == id }),
-              index < metas.count - 1 else { return }
-        selectPage(metas[index + 1].id, remote: false)
-    }
-
-    func selectFolderFromUI(_ folderID: UUID) {
-        guard let folder = store.folder(folderID) else { return }
-        selectedFolderID = folderID
-        if let last = folder.pageIDs.last {
-            selectPage(last, remote: false)
-        } else {
-            selectedPageID = nil
-            loadDisplayed()
-        }
-    }
-
-    // MARK: - 选中页
+    // MARK: - 选中文件
 
     /// remote = 变化来自 iPad（不再回推）；false = 本地 UI 选中（需推送给 iPad）。
     func selectPage(_ id: UUID?, remote: Bool = false) {
         selectedPageID = id
         selectedFolderID = id.flatMap { store.folderID(containing: $0) } ?? selectedFolderID
-        loadDisplayed()
+        showCurrentSceneInWebView()
         if !remote, let id, server.hasClient {
-            pushPageOpen(id)
+            pushFileOpen(id)
         }
     }
 
-    func loadDisplayed() {
-        if let id = selectedPageID,
-           let data = store.drawingData(id),
-           let drawing = try? PKDrawing(data: data) {
-            displayedDrawing = drawing
-        } else {
-            displayedDrawing = PKDrawing()
-        }
-        displayedBgImage = selectedPageID.flatMap { store.bgImage($0) }
-        drawingRevision += 1
-        liveStroke = nil
-    }
-
-    private func pushPageOpen(_ id: UUID) {
-        guard let data = store.drawingData(id),
-              let folderID = store.folderID(containing: id) else { return }
+    private func pushFileOpen(_ id: UUID) {
+        guard let folderID = store.folderID(containing: id) else { return }
         server.send(
-            .pageOpened(
-                pageID: id,
+            .fileOpened(
+                fileID: id,
                 folderID: folderID,
-                drawingData: data,
-                strokeCount: store.strokeCount(id),
-                backgroundImage: store.bgImageData(id)
+                elementsJSON: store.sceneJSON(id) ?? "[]"
             )
         )
     }
@@ -206,7 +139,6 @@ final class MacAppModel: ObservableObject {
         }
         server.onClientDisconnected = { [weak self] _ in
             self?.clientName = nil
-            self?.liveStroke = nil
         }
         server.onMessage = { [weak self] message in
             self?.handleClientMessage(message)
@@ -221,7 +153,7 @@ final class MacAppModel: ObservableObject {
     private func pushInitial() {
         pushLibrary()
         if let id = selectedPageID {
-            pushPageOpen(id)
+            pushFileOpen(id)
         }
     }
 
@@ -234,17 +166,17 @@ final class MacAppModel: ObservableObject {
     private func handleClientMessage(_ message: ClientMessage) {
         switch message {
         case .hello:
-            break // 握手已在服务端处理
+            break
 
         case .requestProjectList:
             pushLibrary()
             if let id = selectedPageID {
-                pushPageOpen(id)
+                pushFileOpen(id)
             }
 
-        case .openPage(let pageID):
-            guard store.pageMeta(pageID) != nil else { break }
-            selectPage(pageID, remote: true)
+        case .openFile(let fileID):
+            guard store.pageMeta(fileID) != nil else { break }
+            selectPage(fileID, remote: true)
 
         case .projectSelect(let folderID):
             guard let folder = store.folder(folderID) else { break }
@@ -253,92 +185,36 @@ final class MacAppModel: ObservableObject {
                 selectPage(last, remote: true)
             } else {
                 selectedPageID = nil
-                loadDisplayed()
+                showCurrentSceneInWebView()
             }
 
-        case .pageCreate(let folderID, let afterPageID, let width, let height):
+        case .fileCreate(let folderID, let afterFileID):
             guard store.folder(folderID) != nil else { break }
-            let size = CGSize(width: max(320, width), height: max(320, height))
-            let meta = store.createPage(
-                folderID: folderID,
-                afterPageID: afterPageID,
-                size: size
-            )
+            let meta = store.createPage(folderID: folderID, afterPageID: afterFileID)
             pushLibrary()
             selectPage(meta.id, remote: true)
-            pushPageOpen(meta.id)
+            pushFileOpen(meta.id)
 
-        case .pageDelete(let pageID):
-            let wasCurrent = pageID == selectedPageID
-            let neighbor = store.deletePage(pageID)
+        case .fileDelete(let fileID):
+            let wasCurrent = fileID == selectedPageID
+            let neighbor = store.deletePage(fileID)
             pushLibrary()
             if wasCurrent {
                 if let neighbor {
                     selectPage(neighbor, remote: true)
-                    pushPageOpen(neighbor)
+                    pushFileOpen(neighbor)
                 } else {
                     selectedPageID = nil
-                    loadDisplayed()
+                    showCurrentSceneInWebView()
                 }
             }
 
-        case .strokeCommitted(let pageID, let strokeData, _):
-            let stroke = store.appendStroke(pageID: pageID, strokeData: strokeData)
-            if pageID == selectedPageID {
-                if let stroke {
-                    displayedDrawing = PKDrawing(strokes: displayedDrawing.strokes + [stroke])
-                    drawingRevision += 1
-                }
-                liveStroke = nil
-            }
-
-        case .liveBegin(let strokeID, let pageID, let style):
-            guard pageID == selectedPageID else { break }
-            liveStroke = LiveStroke(
-                id: strokeID,
-                color: NSColor(
-                    srgbRed: CGFloat(style.red),
-                    green: CGFloat(style.green),
-                    blue: CGFloat(style.blue),
-                    alpha: CGFloat(style.alpha)
-                ),
-                width: CGFloat(style.width),
-                points: []
-            )
-
-        case .livePoints(_, let pageID, let points):
-            guard pageID == selectedPageID, liveStroke != nil else { break }
-            liveStroke?.points.append(contentsOf: points)
-
-        case .liveEnd(_, let pageID):
-            // 保留预览直到真实笔迹（strokeCommitted）到达；超时兜底清除
-            guard pageID == selectedPageID, liveStroke != nil else { break }
-            scheduleLiveClear()
-
-        case .fullPageResync(let pageID, let drawingData, _):
-            guard let drawing = try? PKDrawing(data: drawingData) else { break }
-            store.replaceDrawing(pageID: pageID, drawingData: drawingData)
-            if pageID == selectedPageID {
-                displayedDrawing = drawing
-                drawingRevision += 1
-                liveStroke = nil
-            }
-
-        case .backgroundImageSet(let pageID, let imageData):
-            store.saveBgImage(pageID, imageData: imageData)
-            if pageID == selectedPageID {
-                displayedBgImage = imageData.isEmpty ? nil : NSImage(data: imageData)
+        case .sceneUpdate(let fileID, let elementsJSON):
+            store.scheduleSaveScene(fileID, json: elementsJSON)
+            if fileID == selectedPageID {
+                webView?.applyScene(elementsJSON)
             }
         }
-    }
-
-    private func scheduleLiveClear() {
-        liveClearWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.liveStroke = nil
-        }
-        liveClearWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     // MARK: - 本地管理操作（UI 调用）
@@ -366,7 +242,7 @@ final class MacAppModel: ObservableObject {
                 selectPage(neighbor, remote: false)
             } else {
                 selectedPageID = nil
-                loadDisplayed()
+                showCurrentSceneInWebView()
             }
         }
     }
@@ -374,16 +250,70 @@ final class MacAppModel: ObservableObject {
     func deleteFolderLocal(_ id: UUID) {
         store.deleteFolder(id)
         pushLibrary()
-        reselect()
-    }
-
-    private func reselect() {
-        if let folder = store.folders.last, let pageID = folder.pageIDs.last {
-            selectPage(pageID, remote: false)
+        if let folder = store.folders.last(where: { !$0.pageIDs.isEmpty }) ?? store.folders.last {
+            selectedFolderID = folder.id
+            if let pageID = folder.pageIDs.last {
+                selectPage(pageID, remote: false)
+            } else {
+                selectedPageID = nil
+                showCurrentSceneInWebView()
+            }
         } else {
             selectedFolderID = nil
             selectedPageID = nil
-            loadDisplayed()
+            showCurrentSceneInWebView()
+        }
+    }
+
+    // MARK: - 浮动工具条辅助
+
+    var pageIndicatorText: String {
+        guard let folderID = selectedFolderID else { return "—" }
+        let metas = store.pages(in: folderID)
+        guard let id = selectedPageID,
+              let index = metas.firstIndex(where: { $0.id == id }) else {
+            return "— / \(metas.count)"
+        }
+        return "\(index + 1) / \(metas.count)"
+    }
+
+    var pageCountCurrent: Int {
+        guard let folderID = selectedFolderID else { return 0 }
+        return store.pages(in: folderID).count
+    }
+
+    var pageIndexCurrent: Int {
+        guard let folderID = selectedFolderID,
+              let id = selectedPageID else { return -1 }
+        return store.pages(in: folderID).firstIndex { $0.id == id } ?? -1
+    }
+
+    func prevPageFromUI() {
+        guard let folderID = selectedFolderID else { return }
+        let metas = store.pages(in: folderID)
+        guard let id = selectedPageID,
+              let index = metas.firstIndex(where: { $0.id == id }),
+              index > 0 else { return }
+        selectPage(metas[index - 1].id, remote: false)
+    }
+
+    func nextPageFromUI() {
+        guard let folderID = selectedFolderID else { return }
+        let metas = store.pages(in: folderID)
+        guard let id = selectedPageID,
+              let index = metas.firstIndex(where: { $0.id == id }),
+              index < metas.count - 1 else { return }
+        selectPage(metas[index + 1].id, remote: false)
+    }
+
+    func selectFolderFromUI(_ folderID: UUID) {
+        guard let folder = store.folder(folderID) else { return }
+        selectedFolderID = folderID
+        if let last = folder.pageIDs.last {
+            selectPage(last, remote: false)
+        } else {
+            selectedPageID = nil
+            showCurrentSceneInWebView()
         }
     }
 

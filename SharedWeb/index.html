@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>DrawPad</title>
+  <style>
+    html, body, #app {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: none;
+    }
+    #app { position: fixed; inset: 0; }
+    .excalidraw .App-menu, .excalidraw .App-toolbar { touch-action: manipulation; }
+  </style>
+  <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
+  <script src="vendor/excalidraw.production.min.js" onerror="console.error('script load FAILED: excalidraw')"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    (function () {
+      "use strict";
+      // console 上报（React 内部错误走 console.error，不会触发 window.onerror）
+      function post(name, data) {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
+          window.webkit.messageHandlers[name].postMessage(data);
+        }
+      }
+      ["error", "warn"].forEach(function (level) {
+        var original = console[level] ? console[level].bind(console) : function () {};
+        console[level] = function () {
+          try {
+            post("bridgeError", "[" + level + "] " + Array.prototype.map.call(arguments, String).join(" "));
+          } catch (e) {}
+          original.apply(null, arguments);
+        };
+      });
+      window.onerror = function (msg, src, line, col) {
+        post("bridgeError", "onerror: " + msg + " @ " + (src || "?") + ":" + line + ":" + col);
+      };
+      window.addEventListener("unhandledrejection", function (e) {
+        post("bridgeError", "rejection: " + e.reason);
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      "use strict";
+      var excal = null;
+      var lastRemoteJSON = null;
+      var suppressUntil = 0;
+      var sceneVersion = 0;
+
+      function post(name, data) {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
+          window.webkit.messageHandlers[name].postMessage(data);
+        }
+      }
+
+      var props = {
+        langCode: "zh-CN",
+        theme: "light",
+        renderWelcomeScreen: false,
+        initialData: {
+          appState: {
+            viewBackgroundColor: "#ffffff",
+            currentItemFontSize: 20
+          }
+        },
+        onExcalidrawAPI: function (api) {
+          excal = api;
+          post("ready", { version: sceneVersion });
+        },
+        onChange: function (elements, appState) {
+          if (Date.now() < suppressUntil) return;
+          var json = JSON.stringify(elements);
+          if (json === lastRemoteJSON) return;
+          sceneVersion += 1;
+          post("sceneChange", json);
+        }
+      };
+
+      try {
+        post("bridgeError", "mounting: lib=" + (typeof ExcalidrawLib) + " react=" + (ExcalidrawLib && typeof ExcalidrawLib.React) + " createRoot=" + (ExcalidrawLib && typeof ExcalidrawLib.createRoot));
+        ExcalidrawLib.createRoot(document.getElementById("app")).render(
+          ExcalidrawLib.React.createElement(ExcalidrawLib.Excalidraw, props)
+        );
+      } catch (err) {
+        post("bridgeError", "mount failed: " + String(err && err.stack ? err.stack : err));
+      }
+
+      // ---- Swift → JS 桥 ----
+
+      // 应用对端场景（双引号 JSON 字符串经 JSON 编码后传入）
+      window.__applyScene = function (encodedJSON) {
+        if (!excal) return "not-ready";
+        try {
+          var json = JSON.parse(encodedJSON);
+          lastRemoteJSON = json;
+          suppressUntil = Date.now() + 120;
+          excal.updateScene({ elements: JSON.parse(json) });
+          return "ok";
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      // 取当前场景（返回 JSON 字符串）
+      window.__getScene = function () {
+        if (!excal) return "[]";
+        return JSON.stringify(excal.getSceneElements());
+      };
+
+      // 是否已就绪
+      window.__isReady = function () {
+        return !!excal;
+      };
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,209 @@
+import SwiftUI
+import WebKit
+
+/// macOS：嵌入 Excalidraw 的 WKWebView。
+/// 注意：WKWebView 的 configuration 只在 init 时生效，消息处理器必须先配置再初始化。
+final class BoardWebView: WKWebView {
+    var onReady: (() -> Void)?
+    var onSceneChange: ((String) -> Void)?
+    var onBridgeError: ((String) -> Void)?
+
+    static func diag(_ text: String) {
+        BoardWebViewMessageProxy.diag(text)
+    }
+
+    convenience init() {
+        let content = WKUserContentController()
+        content.add(BoardWebViewMessageProxy.shared, name: "ready")
+        content.add(BoardWebViewMessageProxy.shared, name: "sceneChange")
+        content.add(BoardWebViewMessageProxy.shared, name: "bridgeError")
+        // 页面异常上报（脚本加载失败等）
+        let errorHook = """
+        window.onerror = function (msg, src, line, col) {
+          window.webkit.messageHandlers.bridgeError.postMessage(
+            "onerror: " + msg + " @ " + (src || "?") + ":" + line + ":" + col
+          );
+        };
+        window.addEventListener("unhandledrejection", function (e) {
+          window.webkit.messageHandlers.bridgeError.postMessage("rejection: " + e.reason);
+        });
+        """
+        content.addUserScript(
+            WKUserScript(source: errorHook, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController = content
+        self.init(frame: .zero, configuration: configuration)
+        commonSetup()
+    }
+
+    private func commonSetup() {
+        navigationDelegate = self
+        allowsBackForwardNavigationGestures = false
+        if let html = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "SharedWeb") {
+            let access = html.deletingLastPathComponent()
+            Self.diag("loading html: \(html.path)")
+            loadFileURL(html, allowingReadAccessTo: access)
+        } else {
+            Self.diag("index.html 不在 bundle 中！")
+        }
+    }
+
+    /// 挂载消息回调（消息经 MessageProxy 广播）。
+    func attachHandlers() {
+        BoardWebViewMessageProxy.shared.current = self
+    }
+
+    /// 下发对端场景（内部做 JS 字符串转义）。
+    func applyScene(_ json: String) {
+        let data = (try? JSONEncoder().encode(json)) ?? Data("[]".utf8)
+        guard let encoded = String(data: data, encoding: .utf8) else {
+            return
+        }
+        evaluateJavaScript("window.__applyScene(\(encoded))") { result, error in
+            if let error {
+                NSLog("DrawPad applyScene error: \(error)")
+            }
+            _ = result
+        }
+    }
+
+    func requestCurrentScene(completion: @escaping (String?) -> Void) {
+        evaluateJavaScript("window.__getScene()") { result, _ in
+            completion(result as? String)
+        }
+    }
+}
+
+/// 消息代理：WKScriptMessageHandler 强持有 handler，经此单例转发给当前 webview，
+/// 避免 WKWebView 自引用造成的循环。
+final class BoardWebViewMessageProxy: NSObject, WKScriptMessageHandler {
+    static let shared = BoardWebViewMessageProxy()
+    weak var current: BoardWebView?
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard let view = current else { return }
+        switch message.name {
+        case "ready":
+            Self.diag("webview ready ✓ (Excalidraw mounted)")
+            view.onReady?()
+        case "sceneChange":
+            if let json = message.body as? String {
+                view.onSceneChange?(json)
+            }
+        case "bridgeError":
+            Self.diag("bridgeError: \(message.body)")
+            view.onBridgeError?(String(describing: message.body))
+        default:
+            break
+        }
+    }
+
+    /// 调试日志（写到沙盒容器临时目录，NSLog 会被系统过滤）。
+    static func diag(_ text: String) {
+        let line = "\(Date().formatted(.dateTime.hour().minute().second())) \(text)\n"
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("drawpad_diag.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+        NSLog("DrawPad: \(text)")
+    }
+}
+
+extension BoardWebView: WKNavigationDelegate, WKDownloadDelegate {
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Self.diag("page loaded: \(webView.url?.path ?? "?")")
+        // JS 探针：区分"脚本未执行"与"消息通道不通"
+        webView.evaluateJavaScript(
+            "JSON.stringify({react: typeof window.React, lib: typeof window.ExcalidrawLib, bridge: typeof window.__isReady})"
+        ) { result, error in
+            if let error {
+                Self.diag("js probe error: \(error.localizedDescription)")
+            } else {
+                Self.diag("js probe: \(result ?? "nil")")
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        Self.diag("page FAILED: \(error.localizedDescription)")
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        if navigationResponse.canShowMIMEType {
+            decisionHandler(.allow)
+        } else {
+            decisionHandler(.download)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationResponse: WKNavigationResponse,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        let directory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        completionHandler(directory.appendingPathComponent(suggestedFilename))
+    }
+}
+
+/// SwiftUI 桥接。
+struct ExcalidrawWebView: NSViewRepresentable {
+    let model: MacAppModel
+
+    final class Coordinator {
+        var installed = false
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> BoardWebView {
+        let view = BoardWebView()
+        view.onReady = { [weak model] in
+            model?.handleWebViewReady()
+        }
+        view.onSceneChange = { [weak model] json in
+            model?.handleLocalSceneChange(json)
+        }
+        view.onBridgeError = { error in
+            BoardWebViewMessageProxy.diag("bridge callback: \(error)")
+        }
+        view.attachHandlers()
+        model.webView = view
+        context.coordinator.installed = true
+        return view
+    }
+
+    func updateNSView(_ view: BoardWebView, context: Context) {}
+}

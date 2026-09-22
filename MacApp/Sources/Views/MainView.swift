@@ -6,7 +6,7 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 380)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
         } detail: {
             detailView
         }
@@ -16,70 +16,53 @@ struct MainView: View {
         .sheet(item: $app.renameTarget) { _ in
             RenameSheet()
         }
+        .frame(minWidth: 1000, minHeight: 640)
     }
 
     @ViewBuilder
     private var detailView: some View {
         if let meta = app.currentMeta {
-            BoardSurface(meta: meta)
-        } else {
-            VStack(spacing: 12) {
-                Image(systemName: "pencil.and.list.clipboard")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.secondary)
-                if app.store.folders.isEmpty {
-                    Text("创建一个项目文件夹开始绘制")
-                        .foregroundStyle(.secondary)
-                    Button("新建文件夹") {
-                        app.addFolder()
-                    }
-                } else {
-                    Text("此项目还没有页面")
-                        .foregroundStyle(.secondary)
-                    Button {
-                        let folderID = app.selectedFolderID ?? app.store.folders.last?.id
-                        if let folderID {
-                            app.addPage(in: folderID)
-                        }
-                    } label: {
-                        Label("新建页面", systemImage: "plus.square.on.square")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+            ZStack(alignment: .top) {
+                ExcalidrawWebView(model: app)
+                    .id(meta.id)
+
+                topBar
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle(meta.name)
+        } else {
+            emptyView
         }
     }
-}
 
-// MARK: - 画板界面（Excalidraw 风格浮动工具）
-
-struct BoardSurface: View {
-    @EnvironmentObject private var app: MacAppModel
-    let meta: PageMeta
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            MacCanvasPage(
-                drawing: app.displayedDrawing,
-                revision: app.drawingRevision,
-                live: app.liveStroke,
-                pageSize: meta.pageSize,
-                backgroundImage: app.displayedBgImage,
-                model: app
-            )
-            .id(meta.id)
-
-            topBar
+    private var emptyView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "pencil.and.list.clipboard")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+            if app.store.folders.isEmpty {
+                Text("创建一个项目文件夹开始绘制")
+                    .foregroundStyle(.secondary)
+                Button("新建文件夹") {
+                    app.addFolder()
+                }
+            } else {
+                Text("此项目还没有画板")
+                    .foregroundStyle(.secondary)
+                Button {
+                    let folderID = app.selectedFolderID ?? app.store.folders.last?.id
+                    if let folderID {
+                        app.addPage(in: folderID)
+                    }
+                } label: {
+                    Label("新建画板", systemImage: "plus.square.on.square")
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
-        .overlay(alignment: .bottomLeading) {
-            zoomPill
-                .padding(16)
-        }
-        .navigationTitle(meta.name)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: 顶部工具岛
+    // MARK: 顶部轻量工具岛（画布能力由 Excalidraw 自身 UI 提供）
 
     private var topBar: some View {
         HStack(spacing: 4) {
@@ -92,22 +75,21 @@ struct BoardSurface: View {
             } label: {
                 Image(systemName: "chevron.left")
             }
-            .disabled(app.pageIndex(meta) <= 0)
-            .help("上一页")
+            .disabled(app.pageIndexCurrent <= 0)
+            .help("上一个画板")
 
             Text(app.pageIndicatorText)
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .frame(minWidth: 44)
                 .foregroundStyle(.secondary)
-                .help("当前页 / 总页数")
 
             Button {
                 app.nextPageFromUI()
             } label: {
                 Image(systemName: "chevron.right")
             }
-            .disabled(app.pageIndex(meta) >= app.pageCount(in: meta) - 1)
-            .help("下一页")
+            .disabled(app.pageIndexCurrent >= app.pageCountCurrent - 1)
+            .help("下一个画板")
 
             divider
 
@@ -116,26 +98,14 @@ struct BoardSurface: View {
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
-            .help("新建页面")
+            .help("新建画板")
 
             Button(role: .destructive) {
                 app.confirmDeleteCurrent = true
             } label: {
                 Image(systemName: "trash")
             }
-            .help("删除当前页面")
-
-            divider
-
-            Button {
-                app.exportCurrent()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("导出")
-                }
-            }
-            .help("导出为 PNG")
+            .help("删除当前画板")
 
             divider
 
@@ -150,9 +120,9 @@ struct BoardSurface: View {
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
-        .padding(.top, 10)
+        .padding(.top, 8)
         .confirmationDialog(
-            "删除当前页面？",
+            "删除当前画板？",
             isPresented: $app.confirmDeleteCurrent,
             titleVisibility: .visible
         ) {
@@ -189,7 +159,7 @@ struct BoardSurface: View {
                 Image(systemName: "folder")
                 Text(app.selectedFolderID.flatMap { app.store.folder($0)?.name } ?? "项目")
                     .lineLimit(1)
-                    .frame(maxWidth: 150)
+                    .frame(maxWidth: 140)
             }
         }
         .menuStyle(.borderlessButton)
@@ -220,50 +190,6 @@ struct BoardSurface: View {
         .disabled(app.clientName == nil)
         .help("iPad 连接状态")
     }
-
-    // MARK: 左下缩放控件
-
-    private var zoomPill: some View {
-        HStack(spacing: 4) {
-            Button {
-                app.boardZoomOut()
-            } label: {
-                Image(systemName: "minus")
-                    .frame(width: 24, height: 24)
-            }
-            .help("缩小")
-
-            Text("\(app.zoomPercent)%")
-                .font(.system(size: 12, weight: .medium).monospacedDigit())
-                .frame(minWidth: 44)
-                .foregroundStyle(.secondary)
-
-            Button {
-                app.boardZoomIn()
-            } label: {
-                Image(systemName: "plus")
-                    .frame(width: 24, height: 24)
-            }
-            .help("放大")
-
-            Button {
-                app.boardFit()
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .frame(width: 24, height: 24)
-            }
-            .help("适配窗口")
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.1), radius: 8, y: 2)
-    }
 }
 
 // MARK: - 侧边栏
@@ -276,24 +202,21 @@ struct SidebarView: View {
             ForEach(app.store.folders) { folder in
                 Section(folder.name) {
                     ForEach(app.store.pages(in: folder.id)) { page in
-                        PageRow(page: page)
+                        Label(page.name, systemImage: "square.on.square.dashed")
                             .tag(page.id as UUID?)
                             .contextMenu {
                                 Button("重命名…") {
                                     app.beginRename(.page(page.id))
                                 }
-                                Button("导出 PNG…") {
-                                    app.exportPage(page.id)
-                                }
                                 Divider()
-                                Button("删除页面", role: .destructive) {
+                                Button("删除画板", role: .destructive) {
                                     app.deletePageLocal(page.id)
                                 }
                             }
                     }
                 }
                 .contextMenu {
-                    Button("新建页面") {
+                    Button("新建画板") {
                         app.addPage(in: folder.id)
                     }
                     Button("重命名文件夹…") {
@@ -312,7 +235,7 @@ struct SidebarView: View {
                 ContentUnavailableView(
                     "还没有项目",
                     systemImage: "folder.badge.plus",
-                    description: Text("右键侧边栏或使用菜单创建项目文件夹")
+                    description: Text("在空白处右键新建项目文件夹")
                 )
             }
         }
@@ -323,45 +246,6 @@ struct SidebarView: View {
             get: { app.selectedPageID },
             set: { app.selectPage($0, remote: false) }
         )
-    }
-}
-
-struct PageRow: View {
-    @EnvironmentObject private var app: MacAppModel
-    let page: PageMeta
-
-    static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM-dd HH:mm"
-        return formatter
-    }()
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .frame(width: 56, height: 42)
-                if let image = app.store.thumbnail(for: page) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 52, height: 38)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                } else {
-                    Image(systemName: "doc")
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(page.name)
-                    .lineLimit(1)
-                Text(Self.dateFormatter.string(from: page.updatedAt))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 2)
     }
 }
 
@@ -378,7 +262,7 @@ struct PairingSheet: View {
                 .foregroundStyle(.blue)
             Text("“\(prompt.deviceName)” 请求连接")
                 .font(.title3.bold())
-            Text("允许后，这台 iPad 将作为绘图板使用，\n绘制内容会实时显示在这台 Mac 上。")
+            Text("允许后，这台 iPad 将与 Mac 实时同步画板。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -409,7 +293,7 @@ struct RenameSheet: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Text(app.renameTarget?.isFolder == true ? "重命名文件夹" : "重命名页面")
+            Text(app.renameTarget?.isFolder == true ? "重命名文件夹" : "重命名画板")
                 .font(.headline)
             TextField("名称", text: $app.renameText)
                 .textFieldStyle(.roundedBorder)
@@ -433,12 +317,5 @@ struct RenameSheet: View {
         .onAppear {
             focused = true
         }
-    }
-}
-
-extension RenameTarget {
-    var isFolder: Bool {
-        if case .folder = self { return true }
-        return false
     }
 }
