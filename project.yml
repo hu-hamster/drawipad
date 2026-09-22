@@ -1,0 +1,80 @@
+name: DrawPad
+options:
+  bundleIdPrefix: com.hujing.drawpad
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  DrawPadMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Core
+      - path: MacApp/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hujing.drawpad.mac
+        PRODUCT_NAME: DrawPad
+    info:
+      path: MacApp/Info.plist
+      properties:
+        CFBundleDisplayName: DrawPad
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.graphics-design
+        NSLocalNetworkUsageDescription: DrawPad 通过本地网络与 iPad 建立绘制连接。
+    entitlements:
+      path: MacApp/DrawPadMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.server: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-write: true
+
+  DrawPadPad:
+    type: application
+    platform: iOS
+    sources:
+      - path: Core
+      - path: PadApp/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hujing.drawpad.pad
+        PRODUCT_NAME: DrawPad
+        TARGETED_DEVICE_FAMILY: "2"
+    info:
+      path: PadApp/Info.plist
+      properties:
+        CFBundleDisplayName: DrawPad
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSLocalNetworkUsageDescription: DrawPad 需要访问本地网络以发现并连接你的 Mac。
+        NSBonjourServices:
+          - _drawpad._tcp
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+schemes:
+  DrawPadMac:
+    build:
+      targets:
+        DrawPadMac: all
+    run:
+      config: Debug
+  DrawPadPad:
+    build:
+      targets:
+        DrawPadPad: all
+    run:
+      config: Debug

@@ -1,0 +1,15 @@
+# Xcode
+xcuserdata/
+*.xcuserstate
+xcarchives/
+DerivedData/
+.build/
+
+# xcodegen
+*.xcodeproj
+
+# macOS
+.DS_Store
+
+# 生成产物
+build/
