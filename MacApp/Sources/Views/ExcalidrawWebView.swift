@@ -8,7 +8,7 @@ final class BoardWebView: WKWebView {
     var onSceneChange: ((String) -> Void)?
     var onBridgeError: ((String) -> Void)?
     var onViewportPan: ((Double, Double) -> Void)?
-    var onViewportZoom: ((Double, Double, Double) -> Void)?
+    var onViewportZoom: ((Double, Double, Double, Double, Double) -> Void)?
 
     static func diag(_ text: String) {
         BoardWebViewMessageProxy.diag(text)
@@ -84,27 +84,28 @@ final class BoardWebView: WKWebView {
 
     // MARK: 视口同步
 
-    func applyViewportPan(_ scrollX: Double, _ scrollY: Double) {
-        let js = String(format: "window.__applyViewportPan(%f, %f)", scrollX, scrollY)
+    func applyViewportPan(_ centerX: Double, _ centerY: Double) {
+        let js = String(format: "window.__applyViewportPan(%f, %f)", centerX, centerY)
         evaluateJavaScript(js, completionHandler: nil)
     }
 
-    func applyViewportZoom(_ zoom: Double, _ scrollX: Double, _ scrollY: Double) {
-        let js = String(format: "window.__applyViewportZoom(%f, %f, %f)", zoom, scrollX, scrollY)
+    func applyViewportZoom(_ zoom: Double, centerX: Double, centerY: Double, peerWidth: Double, peerHeight: Double) {
+        let js = String(format: "window.__applyViewportZoom(%f, %f, %f, %f, %f)", zoom, centerX, centerY, peerWidth, peerHeight)
         evaluateJavaScript(js, completionHandler: nil)
     }
 
-    func requestViewport(completion: @escaping ((sx: Double, sy: Double, z: Double)?) -> Void) {
+    func requestViewport(completion: @escaping ((cx: Double, cy: Double, z: Double, vw: Double, vh: Double)?) -> Void) {
         evaluateJavaScript("window.__getViewport()") { result, _ in
             guard let json = result as? String,
                   let data = json.data(using: .utf8),
                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
-                  let sx = dict["sx"], let sy = dict["sy"], let z = dict["z"]
+                  let cx = dict["cx"], let cy = dict["cy"], let z = dict["z"],
+                  let vw = dict["vw"], let vh = dict["vh"]
             else {
                 completion(nil)
                 return
             }
-            completion((sx, sy, z))
+            completion((cx, cy, z, vw, vh))
         }
     }
 }
@@ -135,15 +136,16 @@ final class BoardWebViewMessageProxy: NSObject, WKScriptMessageHandler {
             if let json = message.body as? String,
                let data = json.data(using: .utf8),
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
-               let sx = dict["sx"], let sy = dict["sy"] {
-                view.onViewportPan?(sx, sy)
+               let cx = dict["cx"], let cy = dict["cy"] {
+                view.onViewportPan?(cx, cy)
             }
         case "viewportZoom":
             if let json = message.body as? String,
                let data = json.data(using: .utf8),
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
-               let z = dict["z"], let sx = dict["sx"], let sy = dict["sy"] {
-                view.onViewportZoom?(z, sx, sy)
+               let z = dict["z"], let cx = dict["cx"], let cy = dict["cy"],
+               let vw = dict["vw"], let vh = dict["vh"] {
+                view.onViewportZoom?(z, cx, cy, vw, vh)
             }
         default:
             break
@@ -293,8 +295,8 @@ struct ExcalidrawWebView: NSViewRepresentable {
         view.onViewportPan = { [weak model] sx, sy in
             model?.handleLocalViewportPan(sx, sy)
         }
-        view.onViewportZoom = { [weak model] z, sx, sy in
-            model?.handleLocalViewportZoom(z, sx, sy)
+        view.onViewportZoom = { [weak model] z, cx, cy, vw, vh in
+            model?.handleLocalViewportZoom(z, cx, cy, vw, vh)
         }
         view.onBridgeError = { error in
             BoardWebViewMessageProxy.diag("bridge callback: \(error)")

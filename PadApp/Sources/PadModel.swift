@@ -26,7 +26,6 @@ final class PadModel: ObservableObject {
     private var scenePushWork: DispatchWorkItem?
     /// 视口同步。
     private var viewportPushWork: DispatchWorkItem?
-    private var pendingViewport: (sx: Double, sy: Double, isZoom: Bool, z: Double)?
     private var toastWork: DispatchWorkItem?
 
     init() {
@@ -143,11 +142,17 @@ final class PadModel: ObservableObject {
             guard fileID == currentPageID else { return }
             webView?.applyScene(elementsJSON)
 
-        case .viewportPanChanged(let scrollX, let scrollY):
-            webView?.applyViewportPan(scrollX, scrollY)
+        case .viewportPanChanged(let centerX, let centerY):
+            webView?.applyViewportPan(centerX, centerY)
 
-        case .viewportZoomChanged(let zoom, let scrollX, let scrollY):
-            webView?.applyViewportZoom(zoom, scrollX, scrollY)
+        case .viewportZoomChanged(let zoom, let centerX, let centerY, let viewWidth, let viewHeight):
+            webView?.applyViewportZoom(
+                zoom,
+                centerX: centerX,
+                centerY: centerY,
+                peerWidth: viewWidth,
+                peerHeight: viewHeight
+            )
 
         case .serverError(let message):
             showToast(message)
@@ -223,25 +228,24 @@ final class PadModel: ObservableObject {
     // MARK: - 视口同步
 
     /// 本端平移：防抖推送 Mac。
-    func handleLocalViewportPan(_ sx: Double, _ sy: Double) {
+    func handleLocalViewportPan(_ cx: Double, _ cy: Double) {
         guard case .connected = phase else { return }
-        pendingViewport = (sx, sy, false, 0)
         viewportPushWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            guard let self, let pending = self.pendingViewport else { return }
-            self.pendingViewport = nil
-            self.client.send(.viewportPanChanged(scrollX: pending.sx, scrollY: pending.sy))
+            guard let self else { return }
+            self.client.send(.viewportPanChanged(centerX: cx, centerY: cy))
         }
         viewportPushWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
     }
 
-    /// 本端捏合缩放：立即推送（保持双端 1:1）。
-    func handleLocalViewportZoom(_ z: Double, _ sx: Double, _ sy: Double) {
+    /// 本端捏合缩放：立即推送（对端按屏幕比例换算，画面完整映射）。
+    func handleLocalViewportZoom(_ z: Double, _ cx: Double, _ cy: Double, _ vw: Double, _ vh: Double) {
         guard case .connected = phase else { return }
         viewportPushWork?.cancel()
-        pendingViewport = nil
-        client.send(.viewportZoomChanged(zoom: z, scrollX: sx, scrollY: sy))
+        client.send(
+            .viewportZoomChanged(zoom: z, centerX: cx, centerY: cy, viewWidth: vw, viewHeight: vh)
+        )
     }
 
     /// iPad 本地缩放（仅本机视图，不同步）。

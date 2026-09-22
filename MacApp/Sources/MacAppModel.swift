@@ -50,9 +50,9 @@ final class MacAppModel: ObservableObject {
     private var scenePushWork: DispatchWorkItem?
     /// 视口同步。
     private var viewportPushWork: DispatchWorkItem?
-    private var pendingViewport: (sx: Double, sy: Double, isZoom: Bool, z: Double)?
+    private var pendingPan: (cx: Double, cy: Double)?
     /// 最近一次已知视口（连接对齐用）。
-    private(set) var lastViewport: (sx: Double, sy: Double, z: Double)?
+    private(set) var lastViewport: (cx: Double, cy: Double, z: Double, vw: Double, vh: Double)?
 
     init() {
         store.loadIfNeeded()
@@ -82,34 +82,29 @@ final class MacAppModel: ObservableObject {
     }
 
     /// 本端平移：防抖推送给 iPad。
-    func handleLocalViewportPan(_ sx: Double, _ sy: Double) {
-        lastViewport = (sx, sy, lastViewport?.z ?? 1)
+    func handleLocalViewportPan(_ cx: Double, _ cy: Double) {
+        lastViewport?.cx = cx
+        lastViewport?.cy = cy
         guard server.hasClient else { return }
-        pendingViewport = (sx, sy, false, lastViewport?.z ?? 1)
-        scheduleViewportPush()
-    }
-
-    /// 本端缩放：立即推送（低频事件）。
-    func handleLocalViewportZoom(_ z: Double, _ sx: Double, _ sy: Double) {
-        lastViewport = (sx, sy, z)
-        guard server.hasClient else { return }
-        viewportPushWork?.cancel()
-        server.send(.viewportZoomChanged(zoom: z, scrollX: sx, scrollY: sy))
-    }
-
-    private func scheduleViewportPush() {
+        pendingPan = (cx, cy)
         viewportPushWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            guard let self, let pending = self.pendingViewport else { return }
-            self.pendingViewport = nil
-            if pending.isZoom {
-                self.server.send(.viewportZoomChanged(zoom: pending.z, scrollX: pending.sx, scrollY: pending.sy))
-            } else {
-                self.server.send(.viewportPanChanged(scrollX: pending.sx, scrollY: pending.sy))
-            }
+            guard let self, let pending = self.pendingPan else { return }
+            self.pendingPan = nil
+            self.server.send(.viewportPanChanged(centerX: pending.cx, centerY: pending.cy))
         }
         viewportPushWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
+    }
+
+    /// 本端缩放：立即推送（低频事件）。
+    func handleLocalViewportZoom(_ z: Double, _ cx: Double, _ cy: Double, _ vw: Double, _ vh: Double) {
+        lastViewport = (cx, cy, z, vw, vh)
+        guard server.hasClient else { return }
+        viewportPushWork?.cancel()
+        server.send(
+            .viewportZoomChanged(zoom: z, centerX: cx, centerY: cy, viewWidth: vw, viewHeight: vh)
+        )
     }
 
     /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
@@ -203,9 +198,17 @@ final class MacAppModel: ObservableObject {
         if let id = selectedPageID {
             pushFileOpen(id)
         }
-        // 对齐 iPad 视口（平移 + 缩放 1:1）
+        // 对齐 iPad 视口（画面中心 + 比例换算，iPad 完整显示 Mac 内容）
         if let viewport = lastViewport {
-            server.send(.viewportZoomChanged(zoom: viewport.z, scrollX: viewport.sx, scrollY: viewport.sy))
+            server.send(
+                .viewportZoomChanged(
+                    zoom: viewport.z,
+                    centerX: viewport.cx,
+                    centerY: viewport.cy,
+                    viewWidth: viewport.vw,
+                    viewHeight: viewport.vh
+                )
+            )
         }
     }
 
@@ -268,13 +271,20 @@ final class MacAppModel: ObservableObject {
                 webView?.applyScene(elementsJSON)
             }
 
-        case .viewportPanChanged(let scrollX, let scrollY):
-            lastViewport = (scrollX, scrollY, lastViewport?.z ?? 1)
-            webView?.applyViewportPan(scrollX, scrollY)
+        case .viewportPanChanged(let centerX, let centerY):
+            lastViewport?.cx = centerX
+            lastViewport?.cy = centerY
+            webView?.applyViewportPan(centerX, centerY)
 
-        case .viewportZoomChanged(let zoom, let scrollX, let scrollY):
-            lastViewport = (scrollX, scrollY, zoom)
-            webView?.applyViewportZoom(zoom, scrollX, scrollY)
+        case .viewportZoomChanged(let zoom, let centerX, let centerY, let viewWidth, let viewHeight):
+            lastViewport = (centerX, centerY, zoom, viewWidth, viewHeight)
+            webView?.applyViewportZoom(
+                zoom,
+                centerX: centerX,
+                centerY: centerY,
+                peerWidth: viewWidth,
+                peerHeight: viewHeight
+            )
         }
     }
 

@@ -8,7 +8,7 @@ final class PadBoardWebView: WKWebView {
     var onSceneChange: ((String) -> Void)?
     var onBridgeError: ((String) -> Void)?
     var onViewportPan: ((Double, Double) -> Void)?
-    var onViewportZoom: ((Double, Double, Double) -> Void)?
+    var onViewportZoom: ((Double, Double, Double, Double, Double) -> Void)?
 
     convenience init() {
         let proxy = PadBridgeProxy.shared
@@ -50,13 +50,13 @@ final class PadBoardWebView: WKWebView {
         }
     }
 
-    func applyViewportPan(_ scrollX: Double, _ scrollY: Double) {
-        let js = String(format: "window.__applyViewportPan(%f, %f)", scrollX, scrollY)
+    func applyViewportPan(_ centerX: Double, _ centerY: Double) {
+        let js = String(format: "window.__applyViewportPan(%f, %f)", centerX, centerY)
         evaluateJavaScript(js, completionHandler: nil)
     }
 
-    func applyViewportZoom(_ zoom: Double, _ scrollX: Double, _ scrollY: Double) {
-        let js = String(format: "window.__applyViewportZoom(%f, %f, %f)", zoom, scrollX, scrollY)
+    func applyViewportZoom(_ zoom: Double, centerX: Double, centerY: Double, peerWidth: Double, peerHeight: Double) {
+        let js = String(format: "window.__applyViewportZoom(%f, %f, %f, %f, %f)", zoom, centerX, centerY, peerWidth, peerHeight)
         evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -92,15 +92,16 @@ final class PadBridgeProxy: NSObject, WKScriptMessageHandler {
             if let json = message.body as? String,
                let data = json.data(using: .utf8),
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
-               let sx = dict["sx"], let sy = dict["sy"] {
-                view.onViewportPan?(sx, sy)
+               let cx = dict["cx"], let cy = dict["cy"] {
+                view.onViewportPan?(cx, cy)
             }
         case "viewportZoom":
             if let json = message.body as? String,
                let data = json.data(using: .utf8),
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
-               let z = dict["z"], let sx = dict["sx"], let sy = dict["sy"] {
-                view.onViewportZoom?(z, sx, sy)
+               let z = dict["z"], let cx = dict["cx"], let cy = dict["cy"],
+               let vw = dict["vw"], let vh = dict["vh"] {
+                view.onViewportZoom?(z, cx, cy, vw, vh)
             }
         default:
             break
@@ -130,8 +131,8 @@ struct ExcalidrawPadWebView: UIViewRepresentable {
         view.onViewportPan = { [weak model] sx, sy in
             model?.handleLocalViewportPan(sx, sy)
         }
-        view.onViewportZoom = { [weak model] z, sx, sy in
-            model?.handleLocalViewportZoom(z, sx, sy)
+        view.onViewportZoom = { [weak model] z, cx, cy, vw, vh in
+            model?.handleLocalViewportZoom(z, cx, cy, vw, vh)
         }
         view.onBridgeError = { err in
             print("[DrawPad] 桥错误: \(err)")
