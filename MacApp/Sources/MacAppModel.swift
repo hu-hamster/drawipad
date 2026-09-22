@@ -80,6 +80,10 @@ final class MacAppModel: ObservableObject {
                 self?.lastViewport = viewport
             }
         }
+        // 工具栏位置探针：验证右侧布局 CSS 是否生效
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.webView?.toolbarProbe()
+        }
     }
 
     /// 本端平移：节流推送给 iPad（~50ms 节奏）。

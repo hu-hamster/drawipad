@@ -182,6 +182,32 @@ extension BoardWebView: WKNavigationDelegate, WKDownloadDelegate {
         }
     }
 
+    /// 工具栏位置探针：验证右侧布局是否生效。
+    func toolbarProbe() {
+        let js = """
+        (function () {
+          var el = document.querySelector(".App-menu_top__left");
+          if (!el) return JSON.stringify({found: false});
+          var r = el.getBoundingClientRect();
+          var cs = getComputedStyle(el);
+          var links = document.querySelectorAll('.dropdown-menu-group').length;
+          return JSON.stringify({
+            found: true,
+            left: Math.round(r.left),
+            right: Math.round(r.right),
+            top: Math.round(r.top),
+            width: Math.round(r.width),
+            gridColumn: cs.gridColumn,
+            justifySelf: cs.justifySelf,
+            innerW: window.innerWidth
+          });
+        })()
+        """
+        evaluateJavaScript(js) { result, error in
+            Self.diag("toolbar probe: \(result ?? "err:\(error?.localizedDescription ?? "?")")")
+        }
+    }
+
     /// 分步深探针：定位 __applyScene 内部哪一步失败。
     func deepProbe(_ json: String) {
         let data = (try? JSONEncoder().encode(json)) ?? Data()
