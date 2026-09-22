@@ -67,7 +67,12 @@ final class MacAppModel: ObservableObject {
 
     func handleWebViewReady() {
         webViewReady = true
+        let scene = selectedPageID.flatMap { store.sceneJSON($0) } ?? "[]"
         showCurrentSceneInWebView()
+        // 延迟一拍让 updateScene 完成
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.webView?.deepProbe(scene)
+        }
     }
 
     /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
@@ -220,6 +225,7 @@ final class MacAppModel: ObservableObject {
             store.scheduleSaveScene(fileID, json: elementsJSON)
             if fileID == selectedPageID {
                 webView?.applyScene(elementsJSON)
+                webView?.renderProbe()
             }
         }
     }

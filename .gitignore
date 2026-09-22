@@ -13,3 +13,10 @@ DerivedData/
 
 # 生成产物
 build/
+
+# 本地 AI 工具会话文件
+.zcode/
+
+# Swift Package Manager（将来引入依赖时）
+.swiftpm/
+Package.resolved

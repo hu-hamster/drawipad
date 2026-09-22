@@ -75,6 +75,7 @@
         },
         onExcalidrawAPI: function (api) {
           excal = api;
+          window.__excal = api; // 调试暴露
           post("ready", { version: sceneVersion });
         },
         onChange: function (elements, appState) {
@@ -99,14 +100,14 @@
 
       // ---- Swift → JS 桥 ----
 
-      // 应用对端场景（双引号 JSON 字符串经 JSON 编码后传入）
+      // 应用对端场景（参数为一次 JSON 编码的元素数组字符串）
       window.__applyScene = function (encodedJSON) {
         if (!excal) return "not-ready";
         try {
-          var json = JSON.parse(encodedJSON);
-          lastRemoteJSON = json;
+          var elements = JSON.parse(encodedJSON);
+          lastRemoteJSON = encodedJSON;
           suppressUntil = Date.now() + 120;
-          excal.updateScene({ elements: JSON.parse(json) });
+          excal.updateScene({ elements: elements });
           return "ok";
         } catch (err) {
           return "error:" + err;

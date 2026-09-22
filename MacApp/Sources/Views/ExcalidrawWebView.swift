@@ -60,11 +60,15 @@ final class BoardWebView: WKWebView {
         guard let encoded = String(data: data, encoding: .utf8) else {
             return
         }
-        evaluateJavaScript("window.__applyScene(\(encoded))") { result, error in
+        let expression = "window.__applyScene(\(encoded))"
+        Self.diag("js expr 头120: \(String(expression.prefix(120)))")
+        evaluateJavaScript(expression) { result, error in
             if let error {
-                NSLog("DrawPad applyScene error: \(error)")
+                Self.diag("applyScene JS error: \(error.localizedDescription)")
             }
-            _ = result
+            if let resultString = result as? String, resultString != "ok" {
+                Self.diag("applyScene 返回: \(resultString.prefix(200))")
+            }
         }
     }
 
@@ -128,6 +132,52 @@ extension BoardWebView: WKNavigationDelegate, WKDownloadDelegate {
                 Self.diag("js probe error: \(error.localizedDescription)")
             } else {
                 Self.diag("js probe: \(result ?? "nil")")
+            }
+        }
+    }
+
+    /// 分步深探针：定位 __applyScene 内部哪一步失败。
+    func deepProbe(_ json: String) {
+        let data = (try? JSONEncoder().encode(json)) ?? Data()
+        guard let enc = String(data: data, encoding: .utf8) else { return }
+        let js = """
+        (function () {
+          var out = {};
+          try { var s = JSON.parse(\(enc)); out.p1 = "ok len=" + s.length; } catch (e) { out.p1 = "ERR " + e; }
+          try { var arr = JSON.parse(JSON.parse(\(enc))); out.p2 = "ok elements=" + arr.length + " type0=" + (arr[0] && arr[0].type); } catch (e) { out.p2 = "ERR " + e; }
+          try { window.__excal.updateScene({ elements: JSON.parse(JSON.parse(\(enc))) }); out.p3 = "ok"; } catch (e) { out.p3 = "ERR " + (e && e.stack ? String(e.stack).slice(0, 400) : String(e)); }
+          try { out.p4 = "count=" + window.__excal.getSceneElements().length; } catch (e) { out.p4 = "ERR " + e; }
+          return JSON.stringify(out);
+        })()
+        """
+        evaluateJavaScript(js) { result, error in
+            Self.diag("deepProbe: \(result ?? "JSerr:\(error?.localizedDescription ?? "?")")")
+        }
+    }
+
+    /// 视口/渲染状态探针（诊断画布不可见问题）。
+    func renderProbe() {
+        let experiment = """
+        (function () {
+          try {
+            var api = window.__excal;
+            if (!api) return JSON.stringify({noApi: true});
+            var mk = function (id) { return {type:"rectangle",id:id,x:20,y:20,width:80,height:60,angle:0,strokeColor:"#1e1e1e",backgroundColor:"#a5d8ff",fillStyle:"solid",strokeWidth:2,strokeStyle:"solid",roughness:1,opacity:100,groupIds:[],frameId:null,roundness:null,seed:123,version:1,versionNonce:1,isDeleted:false,boundElements:null,updated:1,link:null,locked:false}; };
+            var direct = api.getSceneElements().length;
+            api.updateScene({ elements: [mk("probe-direct")] });
+            var afterDirect = api.getSceneElements().length;
+            var t1 = window.__applyScene(JSON.stringify(JSON.stringify([mk("probe-double")])));  // 生产路径：双重编码
+            var t2 = window.__applyScene(JSON.stringify([mk("probe-single")]));                 // 单层编码
+            var final = api.getSceneElements().length;
+            return JSON.stringify({direct: direct, afterDirect: afterDirect, double: t1, single: t2, final: final});
+          } catch (e) { return "err:" + e; }
+        })()
+        """
+        evaluateJavaScript(experiment) { result, error in
+            if let error {
+                Self.diag("probe error: \(error.localizedDescription)")
+            } else {
+                Self.diag("api 实验: \(result ?? "nil")")
             }
         }
     }
