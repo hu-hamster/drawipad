@@ -22,10 +22,12 @@ final class PadModel: ObservableObject {
 
     weak var webView: PadBoardWebView?
 
-    /// 本地场景变化 → 推送 Mac 的防抖。
+    /// 本地场景变化 → 推送 Mac 的节流。
     private var scenePushWork: DispatchWorkItem?
+    private var latestSceneJSON: String?
     /// 视口同步。
     private var viewportPushWork: DispatchWorkItem?
+    private var latestPan: (Double, Double)?
     private var toastWork: DispatchWorkItem?
 
     init() {
@@ -209,34 +211,44 @@ final class PadModel: ObservableObject {
 
     // MARK: - 本地场景变化 → Mac
 
+    /// 本地场景变化 → 节流推送 Mac（固定节奏 ~80ms，不因连续绘制而推迟）。
     func handleLocalSceneChange(_ json: String) {
         guard case .connected = phase, let pageID = currentPageID else { return }
         // 初始化期画布会多次自报空场景，直接忽略，防止清空对端内容
         if json == "[]" {
             return
         }
-        print("[DrawPad] 本地场景变化 → 推送 (\(json.count) 字节)")
-        scenePushWork?.cancel()
+        latestSceneJSON = json
+        guard scenePushWork == nil else { return } // 已排定节奏，到点发最新值
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.client.send(.sceneUpdate(fileID: pageID, elementsJSON: json))
+            self.scenePushWork = nil
+            if let json = self.latestSceneJSON {
+                self.latestSceneJSON = nil
+                self.client.send(.sceneUpdate(fileID: pageID, elementsJSON: json))
+            }
         }
         scenePushWork = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
     }
 
     // MARK: - 视口同步
 
-    /// 本端平移：防抖推送 Mac。
+    /// 本端平移：节流推送 Mac（~50ms 节奏）。
     func handleLocalViewportPan(_ cx: Double, _ cy: Double) {
         guard case .connected = phase else { return }
-        viewportPushWork?.cancel()
+        latestPan = (cx, cy)
+        guard viewportPushWork == nil else { return }
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.client.send(.viewportPanChanged(centerX: cx, centerY: cy))
+            self.viewportPushWork = nil
+            if let pan = self.latestPan {
+                self.latestPan = nil
+                self.client.send(.viewportPanChanged(centerX: pan.0, centerY: pan.1))
+            }
         }
         viewportPushWork = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: item)
     }
 
     /// 本端捏合缩放：立即推送（对端按屏幕比例换算，画面完整映射）。

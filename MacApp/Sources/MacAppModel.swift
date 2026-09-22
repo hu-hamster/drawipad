@@ -46,8 +46,9 @@ final class MacAppModel: ObservableObject {
 
     weak var webView: BoardWebView?
 
-    /// 本地场景变化 → 推送 iPad 的防抖。
+    /// 场景推送节流。
     private var scenePushWork: DispatchWorkItem?
+    private var latestSceneJSON: String?
     /// 视口同步。
     private var viewportPushWork: DispatchWorkItem?
     private var pendingPan: (cx: Double, cy: Double)?
@@ -81,20 +82,23 @@ final class MacAppModel: ObservableObject {
         }
     }
 
-    /// 本端平移：防抖推送给 iPad。
+    /// 本端平移：节流推送给 iPad（~50ms 节奏）。
     func handleLocalViewportPan(_ cx: Double, _ cy: Double) {
         lastViewport?.cx = cx
         lastViewport?.cy = cy
         guard server.hasClient else { return }
         pendingPan = (cx, cy)
-        viewportPushWork?.cancel()
+        guard viewportPushWork == nil else { return }
         let item = DispatchWorkItem { [weak self] in
-            guard let self, let pending = self.pendingPan else { return }
-            self.pendingPan = nil
-            self.server.send(.viewportPanChanged(centerX: pending.cx, centerY: pending.cy))
+            guard let self else { return }
+            self.viewportPushWork = nil
+            if let pending = self.pendingPan {
+                self.pendingPan = nil
+                self.server.send(.viewportPanChanged(centerX: pending.cx, centerY: pending.cy))
+            }
         }
         viewportPushWork = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: item)
     }
 
     /// 本端缩放：立即推送（低频事件）。
@@ -107,7 +111,7 @@ final class MacAppModel: ObservableObject {
         )
     }
 
-    /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
+    /// 本端 Excalidraw 场景变化：存盘 + 节流推送给 iPad（~80ms 固定节奏）。
     func handleLocalSceneChange(_ json: String) {
         guard let id = selectedPageID else { return }
         // 初始化期画布会多次自报空场景，直接忽略，防止清空已有内容
@@ -115,16 +119,20 @@ final class MacAppModel: ObservableObject {
             BoardWebViewMessageProxy.diag("忽略本端空场景广播（初始化噪声）")
             return
         }
-        BoardWebViewMessageProxy.diag("本地场景变化: \(json.count) 字节 (file \(id.uuidString.prefix(6)))")
         store.scheduleSaveScene(id, json: json)
         guard server.hasClient else { return }
-        scenePushWork?.cancel()
+        latestSceneJSON = json
+        guard scenePushWork == nil else { return } // 已排定节奏，到点发最新值
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.server.send(.sceneUpdate(fileID: id, elementsJSON: json))
+            self.scenePushWork = nil
+            if let json = self.latestSceneJSON {
+                self.latestSceneJSON = nil
+                self.server.send(.sceneUpdate(fileID: id, elementsJSON: json))
+            }
         }
         scenePushWork = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
     }
 
     private func showCurrentSceneInWebView() {
