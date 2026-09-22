@@ -73,6 +73,11 @@ final class MacAppModel: ObservableObject {
     /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
     func handleLocalSceneChange(_ json: String) {
         guard let id = selectedPageID else { return }
+        // 初始化期画布会多次自报空场景，直接忽略，防止清空已有内容
+        if json == "[]" {
+            BoardWebViewMessageProxy.diag("忽略本端空场景广播（初始化噪声）")
+            return
+        }
         BoardWebViewMessageProxy.diag("本地场景变化: \(json.count) 字节 (file \(id.uuidString.prefix(6)))")
         store.scheduleSaveScene(id, json: json)
         guard server.hasClient else { return }

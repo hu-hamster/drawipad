@@ -197,6 +197,10 @@ final class PadModel: ObservableObject {
 
     func handleLocalSceneChange(_ json: String) {
         guard case .connected = phase, let pageID = currentPageID else { return }
+        // 初始化期画布会多次自报空场景，直接忽略，防止清空对端内容
+        if json == "[]" {
+            return
+        }
         print("[DrawPad] 本地场景变化 → 推送 (\(json.count) 字节)")
         scenePushWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
