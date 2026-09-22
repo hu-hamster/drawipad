@@ -56,6 +56,9 @@
       var lastRemoteJSON = null;
       var suppressUntil = 0;
       var sceneVersion = 0;
+      // 视口同步状态
+      var viewportSuppressUntil = 0;
+      var lastSentViewport = null; // { sx, sy, z }
 
       function post(name, data) {
         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
@@ -79,13 +82,36 @@
           post("ready", { version: sceneVersion });
         },
         onChange: function (elements, appState) {
-          if (Date.now() < suppressUntil) return;
-          var json = JSON.stringify(elements);
-          if (json === lastRemoteJSON) return;
-          // 尚未与对端同步过时，不广播初始空场景（避免挂载竞态清空对端画布）
-          if (lastRemoteJSON === null && elements.length === 0) return;
-          sceneVersion += 1;
-          post("sceneChange", json);
+          var now = Date.now();
+          // --- 元素通道（本端绘制）---
+          if (now >= suppressUntil) {
+            var json = JSON.stringify(elements);
+            if (json !== lastRemoteJSON && !(lastRemoteJSON === null && elements.length === 0)) {
+              sceneVersion += 1;
+              post("sceneChange", json);
+            }
+          }
+          // --- 视口通道（平移/缩放双端同步）---
+          if (now >= viewportSuppressUntil && appState) {
+            var sx = appState.scrollX || 0;
+            var sy = appState.scrollY || 0;
+            var z = (appState.zoom && appState.zoom.value) || 1;
+            if (lastSentViewport !== null) {
+              var zoomChanged = Math.abs(lastSentViewport.z - z) > 0.002;
+              var panChanged =
+                Math.abs(lastSentViewport.sx - sx) > 0.5 || Math.abs(lastSentViewport.sy - sy) > 0.5;
+              if (zoomChanged) {
+                // 缩放变化携带滚动位置（保持锚点一致）
+                lastSentViewport = { sx: sx, sy: sy, z: z };
+                post("viewportZoom", JSON.stringify({ z: z, sx: sx, sy: sy }));
+              } else if (panChanged) {
+                lastSentViewport = { sx: sx, sy: sy, z: z };
+                post("viewportPan", JSON.stringify({ sx: sx, sy: sy }));
+              }
+            } else {
+              lastSentViewport = { sx: sx, sy: sy, z: z };
+            }
+          }
         }
       };
 
@@ -156,6 +182,76 @@
       // 是否已就绪
       window.__isReady = function () {
         return !!excal;
+      };
+
+      // ---- 视口同步（Swift → JS）----
+
+      function clampZoom(z) {
+        return Math.min(8, Math.max(0.1, z));
+      }
+
+      // 应用对端平移（不广播回传）
+      window.__applyViewportPan = function (sx, sy) {
+        if (!excal) return "not-ready";
+        try {
+          viewportSuppressUntil = Date.now() + 300;
+          lastSentViewport = { sx: sx, sy: sy, z: lastSentViewport ? lastSentViewport.z : 1 };
+          excal.updateScene({ appState: { scrollX: sx, scrollY: sy } });
+          return "ok";
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      // 应用对端缩放（含滚动锚点）
+      window.__applyViewportZoom = function (z, sx, sy) {
+        if (!excal) return "not-ready";
+        try {
+          viewportSuppressUntil = Date.now() + 300;
+          lastSentViewport = { sx: sx, sy: sy, z: z };
+          excal.updateScene({ appState: { zoom: { value: clampZoom(z) }, scrollX: sx, scrollY: sy } });
+          return "ok";
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      // iPad 本地缩放（视口中心为锚，不广播）
+      window.__localZoom = function (factor) {
+        if (!excal) return "not-ready";
+        try {
+          var as = excal.getAppState ? excal.getAppState() : null;
+          var oldZ = (as && as.zoom && as.zoom.value) || 1;
+          var newZ = clampZoom(oldZ * factor);
+          var oldSx = (as && as.scrollX) || 0;
+          var oldSy = (as && as.scrollY) || 0;
+          // 保持视口中心的画布点不动
+          var cx = window.innerWidth / 2 / oldZ - oldSx;
+          var cy = window.innerHeight / 2 / oldZ - oldSy;
+          viewportSuppressUntil = Date.now() + 700;
+          lastSentViewport = null; // 本地缩放后暂停广播，直到下一次显式平移/捏合
+          excal.updateScene({
+            appState: {
+              zoom: { value: newZ },
+              scrollX: window.innerWidth / 2 / newZ - cx,
+              scrollY: window.innerHeight / 2 / newZ - cy
+            }
+          });
+          return "ok:" + newZ.toFixed(3);
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      // 读取当前视口（初始同步用）
+      window.__getViewport = function () {
+        if (!excal || !excal.getAppState) return "{}";
+        var as = excal.getAppState();
+        return JSON.stringify({
+          sx: as.scrollX || 0,
+          sy: as.scrollY || 0,
+          z: (as.zoom && as.zoom.value) || 1
+        });
       };
     })();
   </script>

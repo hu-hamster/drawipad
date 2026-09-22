@@ -21,6 +21,10 @@ public enum ClientMessage: Codable, Equatable {
     case fileDelete(fileID: UUID)
     /// 本端场景发生变化（Excalidraw elements JSON，防抖后发送）。
     case sceneUpdate(fileID: UUID, elementsJSON: String)
+    /// 本端视口平移变化（拖动画布，双端同步）。
+    case viewportPanChanged(scrollX: Double, scrollY: Double)
+    /// 本端缩放变化（捏合等，携带缩放后的滚动位置以保持锚点，双端同步 1:1）。
+    case viewportZoomChanged(zoom: Double, scrollX: Double, scrollY: Double)
 }
 
 /// Mac（服务端）→ iPad（客户端）消息。
@@ -33,5 +37,9 @@ public enum ServerMessage: Codable, Equatable {
     case fileOpened(fileID: UUID, folderID: UUID, elementsJSON: String)
     /// 对端场景变化推送。
     case sceneUpdate(fileID: UUID, elementsJSON: String)
+    /// 对端视口平移推送。
+    case viewportPanChanged(scrollX: Double, scrollY: Double)
+    /// 对端缩放推送（携带滚动位置）。
+    case viewportZoomChanged(zoom: Double, scrollX: Double, scrollY: Double)
     case serverError(message: String)
 }

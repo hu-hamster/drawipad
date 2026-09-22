@@ -7,6 +7,8 @@ final class PadBoardWebView: WKWebView {
     var onReady: (() -> Void)?
     var onSceneChange: ((String) -> Void)?
     var onBridgeError: ((String) -> Void)?
+    var onViewportPan: ((Double, Double) -> Void)?
+    var onViewportZoom: ((Double, Double, Double) -> Void)?
 
     convenience init() {
         let proxy = PadBridgeProxy.shared
@@ -14,6 +16,8 @@ final class PadBoardWebView: WKWebView {
         content.add(proxy, name: "ready")
         content.add(proxy, name: "sceneChange")
         content.add(proxy, name: "bridgeError")
+        content.add(proxy, name: "viewportPan")
+        content.add(proxy, name: "viewportZoom")
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = content
         self.init(frame: .zero, configuration: configuration)
@@ -45,6 +49,22 @@ final class PadBoardWebView: WKWebView {
             }
         }
     }
+
+    func applyViewportPan(_ scrollX: Double, _ scrollY: Double) {
+        let js = String(format: "window.__applyViewportPan(%f, %f)", scrollX, scrollY)
+        evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func applyViewportZoom(_ zoom: Double, _ scrollX: Double, _ scrollY: Double) {
+        let js = String(format: "window.__applyViewportZoom(%f, %f, %f)", zoom, scrollX, scrollY)
+        evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    /// 本地缩放（不广播）。
+    func localZoom(_ factor: Double) {
+        let js = String(format: "window.__localZoom(%f)", factor)
+        evaluateJavaScript(js, completionHandler: nil)
+    }
 }
 
 /// 消息代理：避免 WKScriptMessageHandler 强持有 webview 造成循环。
@@ -68,6 +88,20 @@ final class PadBridgeProxy: NSObject, WKScriptMessageHandler {
         case "bridgeError":
             print("[DrawPad] 桥错误: \(message.body)")
             view.onBridgeError?(String(describing: message.body))
+        case "viewportPan":
+            if let json = message.body as? String,
+               let data = json.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+               let sx = dict["sx"], let sy = dict["sy"] {
+                view.onViewportPan?(sx, sy)
+            }
+        case "viewportZoom":
+            if let json = message.body as? String,
+               let data = json.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+               let z = dict["z"], let sx = dict["sx"], let sy = dict["sy"] {
+                view.onViewportZoom?(z, sx, sy)
+            }
         default:
             break
         }
@@ -92,6 +126,12 @@ struct ExcalidrawPadWebView: UIViewRepresentable {
         }
         view.onSceneChange = { [weak model] json in
             model?.handleLocalSceneChange(json)
+        }
+        view.onViewportPan = { [weak model] sx, sy in
+            model?.handleLocalViewportPan(sx, sy)
+        }
+        view.onViewportZoom = { [weak model] z, sx, sy in
+            model?.handleLocalViewportZoom(z, sx, sy)
         }
         view.onBridgeError = { err in
             print("[DrawPad] 桥错误: \(err)")

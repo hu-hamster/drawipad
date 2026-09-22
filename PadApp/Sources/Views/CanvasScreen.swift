@@ -89,6 +89,20 @@ struct CanvasScreen: View {
 
             Spacer(minLength: 4)
 
+            Button {
+                model.localZoom(0.8)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .help("本地缩小（不同步）")
+
+            Button {
+                model.localZoom(1.25)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .help("本地放大（不同步）")
+
             moreMenu
 
             statusDot

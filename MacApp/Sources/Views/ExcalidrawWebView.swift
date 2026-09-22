@@ -7,6 +7,8 @@ final class BoardWebView: WKWebView {
     var onReady: (() -> Void)?
     var onSceneChange: ((String) -> Void)?
     var onBridgeError: ((String) -> Void)?
+    var onViewportPan: ((Double, Double) -> Void)?
+    var onViewportZoom: ((Double, Double, Double) -> Void)?
 
     static func diag(_ text: String) {
         BoardWebViewMessageProxy.diag(text)
@@ -17,6 +19,8 @@ final class BoardWebView: WKWebView {
         content.add(BoardWebViewMessageProxy.shared, name: "ready")
         content.add(BoardWebViewMessageProxy.shared, name: "sceneChange")
         content.add(BoardWebViewMessageProxy.shared, name: "bridgeError")
+        content.add(BoardWebViewMessageProxy.shared, name: "viewportPan")
+        content.add(BoardWebViewMessageProxy.shared, name: "viewportZoom")
         // 页面异常上报（脚本加载失败等）
         let errorHook = """
         window.onerror = function (msg, src, line, col) {
@@ -77,6 +81,32 @@ final class BoardWebView: WKWebView {
             completion(result as? String)
         }
     }
+
+    // MARK: 视口同步
+
+    func applyViewportPan(_ scrollX: Double, _ scrollY: Double) {
+        let js = String(format: "window.__applyViewportPan(%f, %f)", scrollX, scrollY)
+        evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func applyViewportZoom(_ zoom: Double, _ scrollX: Double, _ scrollY: Double) {
+        let js = String(format: "window.__applyViewportZoom(%f, %f, %f)", zoom, scrollX, scrollY)
+        evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func requestViewport(completion: @escaping ((sx: Double, sy: Double, z: Double)?) -> Void) {
+        evaluateJavaScript("window.__getViewport()") { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+                  let sx = dict["sx"], let sy = dict["sy"], let z = dict["z"]
+            else {
+                completion(nil)
+                return
+            }
+            completion((sx, sy, z))
+        }
+    }
 }
 
 /// 消息代理：WKScriptMessageHandler 强持有 handler，经此单例转发给当前 webview，
@@ -101,6 +131,20 @@ final class BoardWebViewMessageProxy: NSObject, WKScriptMessageHandler {
         case "bridgeError":
             Self.diag("bridgeError: \(message.body)")
             view.onBridgeError?(String(describing: message.body))
+        case "viewportPan":
+            if let json = message.body as? String,
+               let data = json.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+               let sx = dict["sx"], let sy = dict["sy"] {
+                view.onViewportPan?(sx, sy)
+            }
+        case "viewportZoom":
+            if let json = message.body as? String,
+               let data = json.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+               let z = dict["z"], let sx = dict["sx"], let sy = dict["sy"] {
+                view.onViewportZoom?(z, sx, sy)
+            }
         default:
             break
         }
@@ -245,6 +289,12 @@ struct ExcalidrawWebView: NSViewRepresentable {
         }
         view.onSceneChange = { [weak model] json in
             model?.handleLocalSceneChange(json)
+        }
+        view.onViewportPan = { [weak model] sx, sy in
+            model?.handleLocalViewportPan(sx, sy)
+        }
+        view.onViewportZoom = { [weak model] z, sx, sy in
+            model?.handleLocalViewportZoom(z, sx, sy)
         }
         view.onBridgeError = { error in
             BoardWebViewMessageProxy.diag("bridge callback: \(error)")

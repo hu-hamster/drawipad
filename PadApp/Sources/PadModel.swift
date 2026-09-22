@@ -24,6 +24,9 @@ final class PadModel: ObservableObject {
 
     /// 本地场景变化 → 推送 Mac 的防抖。
     private var scenePushWork: DispatchWorkItem?
+    /// 视口同步。
+    private var viewportPushWork: DispatchWorkItem?
+    private var pendingViewport: (sx: Double, sy: Double, isZoom: Bool, z: Double)?
     private var toastWork: DispatchWorkItem?
 
     init() {
@@ -140,6 +143,12 @@ final class PadModel: ObservableObject {
             guard fileID == currentPageID else { return }
             webView?.applyScene(elementsJSON)
 
+        case .viewportPanChanged(let scrollX, let scrollY):
+            webView?.applyViewportPan(scrollX, scrollY)
+
+        case .viewportZoomChanged(let zoom, let scrollX, let scrollY):
+            webView?.applyViewportZoom(zoom, scrollX, scrollY)
+
         case .serverError(let message):
             showToast(message)
         }
@@ -209,5 +218,34 @@ final class PadModel: ObservableObject {
         }
         scenePushWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+    }
+
+    // MARK: - 视口同步
+
+    /// 本端平移：防抖推送 Mac。
+    func handleLocalViewportPan(_ sx: Double, _ sy: Double) {
+        guard case .connected = phase else { return }
+        pendingViewport = (sx, sy, false, 0)
+        viewportPushWork?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let pending = self.pendingViewport else { return }
+            self.pendingViewport = nil
+            self.client.send(.viewportPanChanged(scrollX: pending.sx, scrollY: pending.sy))
+        }
+        viewportPushWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
+    }
+
+    /// 本端捏合缩放：立即推送（保持双端 1:1）。
+    func handleLocalViewportZoom(_ z: Double, _ sx: Double, _ sy: Double) {
+        guard case .connected = phase else { return }
+        viewportPushWork?.cancel()
+        pendingViewport = nil
+        client.send(.viewportZoomChanged(zoom: z, scrollX: sx, scrollY: sy))
+    }
+
+    /// iPad 本地缩放（仅本机视图，不同步）。
+    func localZoom(_ factor: Double) {
+        webView?.localZoom(factor)
     }
 }

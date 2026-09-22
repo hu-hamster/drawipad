@@ -48,6 +48,11 @@ final class MacAppModel: ObservableObject {
 
     /// 本地场景变化 → 推送 iPad 的防抖。
     private var scenePushWork: DispatchWorkItem?
+    /// 视口同步。
+    private var viewportPushWork: DispatchWorkItem?
+    private var pendingViewport: (sx: Double, sy: Double, isZoom: Bool, z: Double)?
+    /// 最近一次已知视口（连接对齐用）。
+    private(set) var lastViewport: (sx: Double, sy: Double, z: Double)?
 
     init() {
         store.loadIfNeeded()
@@ -68,6 +73,43 @@ final class MacAppModel: ObservableObject {
     func handleWebViewReady() {
         webViewReady = true
         showCurrentSceneInWebView()
+        // 记录初始视口（iPad 连接时对齐用）
+        webView?.requestViewport { [weak self] viewport in
+            if let viewport {
+                self?.lastViewport = viewport
+            }
+        }
+    }
+
+    /// 本端平移：防抖推送给 iPad。
+    func handleLocalViewportPan(_ sx: Double, _ sy: Double) {
+        lastViewport = (sx, sy, lastViewport?.z ?? 1)
+        guard server.hasClient else { return }
+        pendingViewport = (sx, sy, false, lastViewport?.z ?? 1)
+        scheduleViewportPush()
+    }
+
+    /// 本端缩放：立即推送（低频事件）。
+    func handleLocalViewportZoom(_ z: Double, _ sx: Double, _ sy: Double) {
+        lastViewport = (sx, sy, z)
+        guard server.hasClient else { return }
+        viewportPushWork?.cancel()
+        server.send(.viewportZoomChanged(zoom: z, scrollX: sx, scrollY: sy))
+    }
+
+    private func scheduleViewportPush() {
+        viewportPushWork?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let pending = self.pendingViewport else { return }
+            self.pendingViewport = nil
+            if pending.isZoom {
+                self.server.send(.viewportZoomChanged(zoom: pending.z, scrollX: pending.sx, scrollY: pending.sy))
+            } else {
+                self.server.send(.viewportPanChanged(scrollX: pending.sx, scrollY: pending.sy))
+            }
+        }
+        viewportPushWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
     }
 
     /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
@@ -161,6 +203,10 @@ final class MacAppModel: ObservableObject {
         if let id = selectedPageID {
             pushFileOpen(id)
         }
+        // 对齐 iPad 视口（平移 + 缩放 1:1）
+        if let viewport = lastViewport {
+            server.send(.viewportZoomChanged(zoom: viewport.z, scrollX: viewport.sx, scrollY: viewport.sy))
+        }
     }
 
     func disconnectClient() {
@@ -221,6 +267,14 @@ final class MacAppModel: ObservableObject {
             if fileID == selectedPageID {
                 webView?.applyScene(elementsJSON)
             }
+
+        case .viewportPanChanged(let scrollX, let scrollY):
+            lastViewport = (scrollX, scrollY, lastViewport?.z ?? 1)
+            webView?.applyViewportPan(scrollX, scrollY)
+
+        case .viewportZoomChanged(let zoom, let scrollX, let scrollY):
+            lastViewport = (scrollX, scrollY, zoom)
+            webView?.applyViewportZoom(zoom, scrollX, scrollY)
         }
     }
 
