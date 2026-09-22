@@ -104,15 +104,48 @@
       window.__applyScene = function (encodedJSON) {
         if (!excal) return "not-ready";
         try {
+          var wasEmpty = excal.getSceneElements().length === 0;
           var elements = JSON.parse(encodedJSON);
           lastRemoteJSON = encodedJSON;
           suppressUntil = Date.now() + 120;
           excal.updateScene({ elements: elements });
+          // 空画布首次收到内容：若内容在视口外则居中定位
+          if (wasEmpty && elements.length > 0) {
+            try { centerToContent(); } catch (e2) {}
+          }
           return "ok";
         } catch (err) {
           return "error:" + err;
         }
       };
+
+      function centerToContent() {
+        var els = excal.getSceneElements();
+        if (!els.length) return;
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        els.forEach(function (e) {
+          if (!e.isDeleted) {
+            minX = Math.min(minX, e.x);
+            minY = Math.min(minY, e.y);
+            maxX = Math.max(maxX, e.x + e.width);
+            maxY = Math.max(maxY, e.y + e.height);
+          }
+        });
+        if (!isFinite(minX)) return;
+        var zoom = 1;
+        try {
+          var appState = excal.getAppState ? excal.getAppState() : null;
+          if (appState && appState.zoom && appState.zoom.value) zoom = appState.zoom.value;
+        } catch (e) {}
+        var vw = window.innerWidth / zoom;
+        var vh = window.innerHeight / zoom;
+        excal.updateScene({
+          appState: {
+            scrollX: vw / 2 - (minX + maxX) / 2,
+            scrollY: vh / 2 - (minY + maxY) / 2
+          }
+        });
+      }
 
       // 取当前场景（返回 JSON 字符串）
       window.__getScene = function () {
