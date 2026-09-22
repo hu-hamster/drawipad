@@ -23,6 +23,17 @@
       justify-self: end;
       align-self: center;
     }
+    /* 移除主菜单"Excalidraw links"外链分组（GitHub/X/Discord）及其分隔线 */
+    .excalidraw .dropdown-menu-group:has(a[href*="github.com"]),
+    .excalidraw .dropdown-menu-group:has(a[href*="x.com"]),
+    .excalidraw .dropdown-menu-group:has(a[href*="discord.gg"]) {
+      display: none !important;
+    }
+    .excalidraw .dropdown-menu-separator:has(
+        + .dropdown-menu-group:has(a[href*="github.com"])
+      ) {
+      display: none !important;
+    }
   </style>
   <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
   <script src="vendor/excalidraw.production.min.js" onerror="console.error('script load FAILED: excalidraw')"></script>
