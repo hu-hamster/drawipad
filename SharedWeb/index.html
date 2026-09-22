@@ -17,6 +17,12 @@
     }
     #app { position: fixed; inset: 0; }
     .excalidraw .App-menu, .excalidraw .App-toolbar { touch-action: manipulation; }
+    /* 工具栏（选择/矩形/画笔…）移到右侧竖排，避开顶部自定义工具条 */
+    .excalidraw .App-menu_top__left {
+      grid-column: 3;
+      justify-self: end;
+      align-self: center;
+    }
   </style>
   <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
   <script src="vendor/excalidraw.production.min.js" onerror="console.error('script load FAILED: excalidraw')"></script>
