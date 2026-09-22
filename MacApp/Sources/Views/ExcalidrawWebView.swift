@@ -182,29 +182,42 @@ extension BoardWebView: WKNavigationDelegate, WKDownloadDelegate {
         }
     }
 
-    /// 工具栏位置探针：验证右侧布局是否生效。
+    /// 工具栏位置探针：测量各 UI 元素真实位置。
     func toolbarProbe() {
         let js = """
         (function () {
-          var el = document.querySelector(".App-menu_top__left");
-          if (!el) return JSON.stringify({found: false});
-          var r = el.getBoundingClientRect();
-          var cs = getComputedStyle(el);
-          var links = document.querySelectorAll('.dropdown-menu-group').length;
-          return JSON.stringify({
-            found: true,
-            left: Math.round(r.left),
-            right: Math.round(r.right),
-            top: Math.round(r.top),
-            width: Math.round(r.width),
-            gridColumn: cs.gridColumn,
-            justifySelf: cs.justifySelf,
-            innerW: window.innerWidth
-          });
+          function info(el) {
+            var r = el.getBoundingClientRect();
+            var cs = getComputedStyle(el);
+            return {
+              cls: (el.className || "").toString().slice(0, 60),
+              parent: el.parentElement ? (el.parentElement.className || "").toString().slice(0, 50) : "?",
+              l: Math.round(r.left), t: Math.round(r.top),
+              w: Math.round(r.width), h: Math.round(r.height),
+              pos: cs.position, right: cs.right, flexDir: cs.flexDirection
+            };
+          }
+          var bars = [];
+          document.querySelectorAll(".excalidraw .App-toolbar").forEach(function (el) { bars.push(info(el)); });
+          var hamburger = document.querySelector(".excalidraw-ui-top-left");
+          var children = [];
+          var island = document.querySelector(".excalidraw .App-toolbar");
+          if (island) {
+            island.querySelectorAll(":scope > *").forEach(function (c) {
+              var r = c.getBoundingClientRect();
+              children.push({ cls: (c.className || "").toString().slice(0, 70), w: Math.round(r.width), h: Math.round(r.height), cs: getComputedStyle(c).flexDirection });
+            });
+            var gc = [];
+            island.querySelectorAll(":scope > * > *").forEach(function (c) {
+              var r = c.getBoundingClientRect();
+              gc.push({ cls: (c.className || "").toString().slice(0, 60), w: Math.round(r.width), h: Math.round(r.height) });
+            });
+          }
+          return JSON.stringify({ bars: bars, children: children, grandchildren: gc.slice(0, 6), hamburger: hamburger ? info(hamburger) : null, vw: window.innerWidth, vh: window.innerHeight });
         })()
         """
         evaluateJavaScript(js) { result, error in
-            Self.diag("toolbar probe: \(result ?? "err:\(error?.localizedDescription ?? "?")")")
+            Self.diag("UI probe: \(result ?? "err:\(error?.localizedDescription ?? "?")")")
         }
     }
 

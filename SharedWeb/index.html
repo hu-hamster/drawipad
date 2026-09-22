@@ -17,15 +17,39 @@
     }
     #app { position: fixed; inset: 0; }
     .excalidraw .App-menu, .excalidraw .App-toolbar { touch-action: manipulation; }
-    /* 工具栏（选择/矩形/画笔…）移到右侧竖排垂直居中，避开顶部自定义工具条 */
-    .excalidraw .App-menu.App-menu_top {
-      height: 100% !important;
-      box-sizing: border-box;
+    /* 仅移动形状工具岛（选择/矩形/画笔…）：默认顶部中央与自定义工具条重叠，
+       JS 挂 dpad-dock 标记并重挂载到根节点，由以下规则定位为右侧竖排垂直居中。
+       汉堡菜单/素材按钮保持原位。注意 Stack 是 grid 布局。 */
+    .App-toolbar-container.dpad-dock {
+      position: absolute !important;
+      right: 12px !important;
+      left: auto !important;
+      top: 50% !important;
+      bottom: auto !important;
+      transform: translateY(-50%) !important;
+      margin: 0 !important;
+      z-index: 4;
     }
-    .excalidraw .App-menu.App-menu_top .App-menu_top__left {
-      grid-column: 3 !important;
-      justify-self: end !important;
-      align-self: center !important;
+    .App-toolbar-container.dpad-dock .App-toolbar {
+      width: max-content !important;
+      align-items: center !important;
+      flex-direction: column !important;
+    }
+    .App-toolbar-container.dpad-dock .Stack_horizontal {
+      grid-auto-flow: row !important;
+      grid-template-rows: auto !important;
+      grid-template-columns: none !important;
+      grid-auto-columns: min-content !important;
+      justify-items: center;
+    }
+    /* 提示条不占位，悬浮在岛上方 */
+    .App-toolbar-container.dpad-dock .HintViewer {
+      position: absolute !important;
+      left: 50% !important;
+      top: -36px !important;
+      transform: translateX(-50%) !important;
+      width: max-content !important;
+      white-space: nowrap;
     }
     /* 移除主菜单"Excalidraw links"外链分组（GitHub/X/Discord）及其分隔线 */
     .excalidraw .dropdown-menu-group:has(a[href*="github.com"]),
@@ -201,6 +225,20 @@
         if (!excal) return "[]";
         return JSON.stringify(excal.getSceneElements());
       };
+
+      // 工具岛重挂载：打 dpad-dock 标记 + 移到 .excalidraw 根下（配合 CSS 右侧竖排定位）
+      function relocateToolbar() {
+        var container = document.querySelector(".excalidraw .App-toolbar-container");
+        var root = document.querySelector(".excalidraw");
+        if (container && root) {
+          container.classList.add("dpad-dock");
+          if (container.parentElement !== root) {
+            root.appendChild(container);
+          }
+        }
+      }
+      relocateToolbar();
+      setInterval(relocateToolbar, 1000);
 
       // 是否已就绪
       window.__isReady = function () {
