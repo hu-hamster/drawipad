@@ -38,6 +38,8 @@ final class MacAppModel: ObservableObject {
     @Published var clientName: String?
     @Published var renameTarget: RenameTarget?
     @Published var renameText = ""
+    @Published var isCreatingFolder = false
+    @Published var newFolderName = ""
     @Published var confirmDeleteCurrent = false
     @Published var webViewReady = false
 
@@ -54,6 +56,9 @@ final class MacAppModel: ObservableObject {
     private var pendingPan: (cx: Double, cy: Double)?
     /// 最近一次已知视口（连接对齐用）。
     private(set) var lastViewport: (cx: Double, cy: Double, z: Double, vw: Double, vh: Double)?
+    private var initialViewportSentForClient = false
+    private var initialViewportReadInFlight = false
+    private var initialViewportRetryWork: DispatchWorkItem?
 
     init() {
         store.loadIfNeeded()
@@ -74,10 +79,12 @@ final class MacAppModel: ObservableObject {
     func handleWebViewReady() {
         webViewReady = true
         showCurrentSceneInWebView()
-        // 记录初始视口（iPad 连接时对齐用）
-        webView?.requestViewport { [weak self] viewport in
-            if let viewport {
-                self?.lastViewport = viewport
+        if server.hasClient {
+            sendInitialViewportIfReady()
+        } else {
+            // 预先记录视口，连接回调仍会重新读取一次最新值。
+            webView?.requestViewport { [weak self] viewport in
+                if let viewport { self?.lastViewport = viewport }
             }
         }
         // 工具栏位置探针：验证右侧布局 CSS 是否生效（延后避开重挂载竞态）
@@ -110,9 +117,15 @@ final class MacAppModel: ObservableObject {
         lastViewport = (cx, cy, z, vw, vh)
         guard server.hasClient else { return }
         viewportPushWork?.cancel()
+        viewportPushWork = nil
+        pendingPan = nil
         server.send(
             .viewportZoomChanged(zoom: z, centerX: cx, centerY: cy, viewWidth: vw, viewHeight: vh)
         )
+    }
+
+    func fitToContent() {
+        webView?.fitToContent()
     }
 
     /// 本端 Excalidraw 场景变化：存盘 + 节流推送给 iPad（~80ms 固定节奏）。
@@ -190,10 +203,19 @@ final class MacAppModel: ObservableObject {
         server.onClientConnected = { [weak self] _ in
             guard let self else { return }
             self.clientName = self.server.clientName
+            self.initialViewportSentForClient = false
+            self.initialViewportReadInFlight = false
+            self.initialViewportRetryWork?.cancel()
+            self.initialViewportRetryWork = nil
             self.pushInitial()
         }
         server.onClientDisconnected = { [weak self] _ in
-            self?.clientName = nil
+            guard let self else { return }
+            self.clientName = nil
+            self.initialViewportRetryWork?.cancel()
+            self.initialViewportRetryWork = nil
+            self.initialViewportReadInFlight = false
+            self.initialViewportSentForClient = false
         }
         server.onMessage = { [weak self] message in
             self?.handleClientMessage(message)
@@ -210,17 +232,61 @@ final class MacAppModel: ObservableObject {
         if let id = selectedPageID {
             pushFileOpen(id)
         }
-        // 对齐 iPad 视口（画面中心 + 比例换算，iPad 完整显示 Mac 内容）
-        if let viewport = lastViewport {
-            server.send(
-                .viewportZoomChanged(
-                    zoom: viewport.z,
-                    centerX: viewport.cx,
-                    centerY: viewport.cy,
-                    viewWidth: viewport.vw,
-                    viewHeight: viewport.vh
+        sendInitialViewportIfReady()
+    }
+
+    /// 场景树和当前文件下发后，等 Mac 画布 WebView 就绪并读取一次实时视口再发给 iPad。
+    private func sendInitialViewportIfReady(attempt: Int = 0) {
+        guard server.hasClient, webViewReady,
+              !initialViewportSentForClient,
+              !initialViewportReadInFlight,
+              let webView else { return }
+
+        initialViewportReadInFlight = true
+        webView.requestViewport { [weak self] viewport in
+            guard let self else { return }
+            self.initialViewportReadInFlight = false
+            guard self.server.hasClient,
+                  self.webViewReady,
+                  !self.initialViewportSentForClient else { return }
+
+            if let viewport {
+                self.lastViewport = viewport
+                self.server.send(
+                    .viewportZoomChanged(
+                        zoom: viewport.z,
+                        centerX: viewport.cx,
+                        centerY: viewport.cy,
+                        viewWidth: viewport.vw,
+                        viewHeight: viewport.vh
+                    )
                 )
-            )
+                self.initialViewportSentForClient = true
+                return
+            }
+
+            if attempt < 5 {
+                let retry = DispatchWorkItem { [weak self] in
+                    self?.initialViewportRetryWork = nil
+                    self?.sendInitialViewportIfReady(attempt: attempt + 1)
+                }
+                self.initialViewportRetryWork?.cancel()
+                self.initialViewportRetryWork = retry
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120), execute: retry)
+            } else if let fallback = self.lastViewport {
+                self.server.send(
+                    .viewportZoomChanged(
+                        zoom: fallback.z,
+                        centerX: fallback.cx,
+                        centerY: fallback.cy,
+                        viewWidth: fallback.vw,
+                        viewHeight: fallback.vh
+                    )
+                )
+                self.initialViewportSentForClient = true
+            } else {
+                BoardWebViewMessageProxy.diag("无法读取初始视口；等待下一次视口变化")
+            }
         }
     }
 
@@ -303,8 +369,17 @@ final class MacAppModel: ObservableObject {
     // MARK: - 本地管理操作（UI 调用）
 
     func addFolder() {
-        let folder = store.createFolder()
+        newFolderName = ""
+        isCreatingFolder = true
+    }
+
+    func createFolderFromUI() {
+        let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let folder = store.createFolder(name: name)
         selectedFolderID = folder.id
+        selectedPageID = nil
+        showCurrentSceneInWebView()
         pushLibrary()
     }
 

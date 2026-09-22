@@ -16,17 +16,21 @@ struct MainView: View {
         .sheet(item: $app.renameTarget) { _ in
             RenameSheet()
         }
-        .frame(minWidth: 1000, minHeight: 640)
+        .sheet(isPresented: $app.isCreatingFolder) {
+            NewProjectSheet()
+        }
     }
 
     @ViewBuilder
     private var detailView: some View {
         if let meta = app.currentMeta {
-            ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                topBar
+                    .frame(maxWidth: .infinity)
+                    .background(.bar)
+
                 ExcalidrawWebView(model: app)
                     .id(meta.id)
-
-                topBar
             }
             .navigationTitle(meta.name)
         } else {
@@ -66,10 +70,6 @@ struct MainView: View {
 
     private var topBar: some View {
         HStack(spacing: 4) {
-            folderMenu
-
-            divider
-
             Button {
                 app.prevPageFromUI()
             } label: {
@@ -82,6 +82,16 @@ struct MainView: View {
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .frame(minWidth: 44)
                 .foregroundStyle(.secondary)
+
+            Button {
+                if let id = app.selectedPageID {
+                    app.beginRename(.page(id))
+                }
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .disabled(app.selectedPageID == nil)
+            .help("重命名当前画板")
 
             Button {
                 app.nextPageFromUI()
@@ -99,6 +109,13 @@ struct MainView: View {
                 Image(systemName: "plus.square.on.square")
             }
             .help("新建画板")
+
+            Button {
+                app.fitToContent()
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .help("适应画板内容（同步到 iPad）")
 
             Button(role: .destructive) {
                 app.confirmDeleteCurrent = true
@@ -121,6 +138,7 @@ struct MainView: View {
         )
         .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
         .padding(.top, 8)
+        .padding(.bottom, 8)
         .confirmationDialog(
             "删除当前画板？",
             isPresented: $app.confirmDeleteCurrent,
@@ -139,32 +157,6 @@ struct MainView: View {
         Rectangle()
             .fill(Color.primary.opacity(0.12))
             .frame(width: 1, height: 16)
-    }
-
-    private var folderMenu: some View {
-        Menu {
-            ForEach(app.store.folders) { folder in
-                Button {
-                    app.selectFolderFromUI(folder.id)
-                } label: {
-                    if folder.id == app.selectedFolderID {
-                        Label(folder.name, systemImage: "checkmark")
-                    } else {
-                        Text(folder.name)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "folder")
-                Text(app.selectedFolderID.flatMap { app.store.folder($0)?.name } ?? "项目")
-                    .lineLimit(1)
-                    .frame(maxWidth: 140)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("切换项目")
     }
 
     private var connectionStatus: some View {
@@ -196,49 +188,125 @@ struct MainView: View {
 
 struct SidebarView: View {
     @EnvironmentObject private var app: MacAppModel
+    @State private var expandedFolderIDs: Set<UUID> = []
 
     var body: some View {
-        List(selection: pageSelection) {
-            ForEach(app.store.folders) { folder in
-                Section(folder.name) {
-                    ForEach(app.store.pages(in: folder.id)) { page in
-                        Label(page.name, systemImage: "square.on.square.dashed")
-                            .tag(page.id as UUID?)
-                            .contextMenu {
-                                Button("重命名…") {
-                                    app.beginRename(.page(page.id))
-                                }
-                                Divider()
-                                Button("删除画板", role: .destructive) {
-                                    app.deletePageLocal(page.id)
-                                }
-                            }
-                    }
+        VStack(spacing: 0) {
+            HStack {
+                Label("项目", systemImage: "square.stack.3d.up")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    app.addFolder()
+                } label: {
+                    Image(systemName: "folder.badge.plus")
                 }
-                .contextMenu {
-                    Button("新建画板") {
-                        app.addPage(in: folder.id)
+                .buttonStyle(.borderless)
+                .help("新建项目")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            List(selection: pageSelection) {
+                ForEach(app.store.folders) { folder in
+                    DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                        ForEach(app.store.pages(in: folder.id)) { page in
+                            Label(page.name, systemImage: "scribble.variable")
+                                .tag(page.id as UUID?)
+                                .contextMenu {
+                                    Button("重命名画板…") {
+                                        app.beginRename(.page(page.id))
+                                    }
+                                    Divider()
+                                    Button("删除画板", role: .destructive) {
+                                        app.deletePageLocal(page.id)
+                                    }
+                                }
+                        }
+                    } label: {
+                        projectHeader(folder)
                     }
-                    Button("重命名文件夹…") {
-                        app.beginRename(.folder(folder.id))
-                    }
-                    Divider()
-                    Button("删除文件夹", role: .destructive) {
-                        app.deleteFolderLocal(folder.id)
+                    .contextMenu {
+                        Button("新建画板") {
+                            app.addPage(in: folder.id)
+                        }
+                        Button("重命名项目…") {
+                            app.beginRename(.folder(folder.id))
+                        }
+                        Divider()
+                        Button("删除项目", role: .destructive) {
+                            app.deleteFolderLocal(folder.id)
+                        }
                     }
                 }
             }
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
         .overlay {
             if app.store.folders.isEmpty {
                 ContentUnavailableView(
                     "还没有项目",
                     systemImage: "folder.badge.plus",
-                    description: Text("在空白处右键新建项目文件夹")
+                    description: Text("点击左上角 + 创建项目")
                 )
             }
         }
+    }
+
+    private func projectHeader(_ folder: Folder) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                app.selectFolderFromUI(folder.id)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(.blue)
+                    Text(folder.name)
+                        .lineLimit(1)
+                    Text("\(folder.pageIDs.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 3)
+            .background {
+                if app.selectedFolderID == folder.id && app.selectedPageID == nil {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.accentColor.opacity(0.14))
+                }
+            }
+
+            Button {
+                expandedFolderIDs.insert(folder.id)
+                app.addPage(in: folder.id)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help("在「\(folder.name)」中新建画板")
+        }
+    }
+
+    private func folderExpansion(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: {
+                expandedFolderIDs.contains(id)
+                    || app.selectedPageID.map { app.store.folder(id)?.pageIDs.contains($0) == true } == true
+            },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedFolderIDs.insert(id)
+                } else {
+                    expandedFolderIDs.remove(id)
+                }
+            }
+        )
     }
 
     private var pageSelection: Binding<UUID?> {
@@ -246,6 +314,39 @@ struct SidebarView: View {
             get: { app.selectedPageID },
             set: { app.selectPage($0, remote: false) }
         )
+    }
+}
+
+struct NewProjectSheet: View {
+    @EnvironmentObject private var app: MacAppModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("新建项目")
+                .font(.headline)
+            TextField("项目名称", text: $app.newFolderName)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit(createProject)
+            HStack(spacing: 12) {
+                Button("取消") {
+                    app.isCreatingFolder = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("创建", action: createProject)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(app.newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 320)
+        .onAppear { focused = true }
+    }
+
+    private func createProject() {
+        app.createFolderFromUI()
+        app.isCreatingFolder = false
     }
 }
 

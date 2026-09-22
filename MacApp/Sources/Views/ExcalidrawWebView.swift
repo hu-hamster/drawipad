@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import UniformTypeIdentifiers
 
 /// macOS：嵌入 Excalidraw 的 WKWebView。
 /// 注意：WKWebView 的 configuration 只在 init 时生效，消息处理器必须先配置再初始化。
@@ -43,6 +44,7 @@ final class BoardWebView: WKWebView {
 
     private func commonSetup() {
         navigationDelegate = self
+        uiDelegate = self
         allowsBackForwardNavigationGestures = false
         if let html = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "SharedWeb") {
             let access = html.deletingLastPathComponent()
@@ -92,6 +94,10 @@ final class BoardWebView: WKWebView {
     func applyViewportZoom(_ zoom: Double, centerX: Double, centerY: Double, peerWidth: Double, peerHeight: Double) {
         let js = String(format: "window.__applyViewportZoom(%f, %f, %f, %f, %f)", zoom, centerX, centerY, peerWidth, peerHeight)
         evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func fitToContent() {
+        evaluateJavaScript("window.__fitToContent && window.__fitToContent()", completionHandler: nil)
     }
 
     func requestViewport(completion: @escaping ((cx: Double, cy: Double, z: Double, vw: Double, vh: Double)?) -> Void) {
@@ -167,7 +173,7 @@ final class BoardWebViewMessageProxy: NSObject, WKScriptMessageHandler {
     }
 }
 
-extension BoardWebView: WKNavigationDelegate, WKDownloadDelegate {
+extension BoardWebView: WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Self.diag("page loaded: \(webView.url?.path ?? "?")")
         // JS 探针：区分"脚本未执行"与"消息通道不通"
@@ -280,6 +286,30 @@ extension BoardWebView: WKNavigationDelegate, WKDownloadDelegate {
             decisionHandler(.allow)
         } else {
             decisionHandler(.download)
+        }
+    }
+
+    /// Excalidraw 的“打开”通过 HTML file input 触发；WKWebView 需要原生 open panel 才能选取本地文件。
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+
+        var contentTypes: [UTType] = [.json]
+        for ext in ["excalidraw", "excalidrawlib"] {
+            if let type = UTType(filenameExtension: ext) {
+                contentTypes.append(type)
+            }
+        }
+        panel.allowedContentTypes = contentTypes
+        panel.begin { response in
+            completionHandler(response == .OK ? panel.urls : nil)
         }
     }
 

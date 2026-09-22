@@ -87,7 +87,14 @@ public final class DrawPadServer {
 
     /// 主动断开当前客户端。
     public func disconnectClient() {
-        active?.cancel()
+        guard let peer = active else { return }
+        // 先明确通知客户端停止自动重连，再关闭底层连接。
+        // 留出短暂时间让消息完成发送，避免 cancel 抢先丢弃帧。
+        sendTo(peer, .sessionEnded(reason: "Mac 已断开连接"))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak peer] in
+            guard let self, let peer, peer === self.active else { return }
+            peer.cancel()
+        }
     }
 
     public func send(_ message: ServerMessage) {

@@ -38,15 +38,17 @@ final class PadBoardWebView: WKWebView {
     }
 
     /// 下发对端场景（内部做 JS 字符串转义）。
-    func applyScene(_ json: String) {
+    func applyScene(_ json: String, completion: ((Bool) -> Void)? = nil) {
         let data = (try? JSONEncoder().encode(json)) ?? Data("[]".utf8)
         guard let encoded = String(data: data, encoding: .utf8) else {
+            completion?(false)
             return
         }
-        evaluateJavaScript("window.__applyScene && window.__applyScene(\(encoded))") { _, error in
+        evaluateJavaScript("window.__applyScene && window.__applyScene(\(encoded))") { result, error in
             if let error {
                 print("[DrawPad] applyScene: \(error.localizedDescription)")
             }
+            completion?(error == nil && (result as? String) == "ok")
         }
     }
 
@@ -60,10 +62,14 @@ final class PadBoardWebView: WKWebView {
         evaluateJavaScript(js, completionHandler: nil)
     }
 
-    /// 本地缩放（不广播）。
+    /// 按钮缩放；网页侧会通过 viewportZoom 回调同步给 Mac。
     func localZoom(_ factor: Double) {
         let js = String(format: "window.__localZoom(%f)", factor)
         evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func fitToContent() {
+        evaluateJavaScript("window.__fitToContent && window.__fitToContent()", completionHandler: nil)
     }
 }
 
@@ -115,15 +121,10 @@ struct ExcalidrawPadWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PadBoardWebView {
         let view = PadBoardWebView()
-        view.onReady = { [weak model] in
+        view.onReady = { [weak model, weak view] in
             print("[DrawPad] iPad 画布就绪 ✓ (Excalidraw mounted)")
-            guard let model else { return }
-            model.webViewReady = true
-            if let pending = model.pendingScene {
-                model.pendingScene = nil
-                print("[DrawPad] 应用暂存场景 \(pending.count) 字节")
-                model.webView?.applyScene(pending)
-            }
+            guard let model, let view else { return }
+            model.handleWebViewReady(view)
         }
         view.onSceneChange = { [weak model] json in
             model?.handleLocalSceneChange(json)
@@ -137,7 +138,7 @@ struct ExcalidrawPadWebView: UIViewRepresentable {
         view.onBridgeError = { err in
             print("[DrawPad] 桥错误: \(err)")
         }
-        model.webView = view
+        model.attachWebView(view)
         return view
     }
 

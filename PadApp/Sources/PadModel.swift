@@ -14,6 +14,9 @@ final class PadModel: ObservableObject {
     @Published var webViewReady = false
     /// 画布就绪前到达的场景（就绪后应用）。
     var pendingScene: String?
+    /// 初始场景确认写入当前 WebView 后才允许向 Mac 回传，防止空画布覆盖远端。
+    private var sceneReadyForEditing = false
+    private var isApplyingPendingScene = false
     /// 已成功连接过（断线重连时保持画布界面）。
     @Published var wasConnected = false
 
@@ -28,6 +31,9 @@ final class PadModel: ObservableObject {
     /// 视口同步。
     private var viewportPushWork: DispatchWorkItem?
     private var latestPan: (Double, Double)?
+    /// 初始握手期间先缓存远端视口，等场景进入 WebView 后再套用，避免被场景居中逻辑覆盖。
+    private var pendingViewportZoom: (zoom: Double, cx: Double, cy: Double, vw: Double, vh: Double)?
+    private var viewportApplyWork: DispatchWorkItem?
     private var toastWork: DispatchWorkItem?
 
     init() {
@@ -61,9 +67,69 @@ final class PadModel: ObservableObject {
     }
 
     private func resetSession() {
+        scenePushWork?.cancel()
+        scenePushWork = nil
+        latestSceneJSON = nil
+        viewportPushWork?.cancel()
+        viewportPushWork = nil
+        latestPan = nil
+        viewportApplyWork?.cancel()
+        viewportApplyWork = nil
+        pendingViewportZoom = nil
+        webViewReady = false
+        webView = nil
+        pendingScene = nil
+        sceneReadyForEditing = false
+        isApplyingPendingScene = false
         snapshot = LibrarySnapshot()
         currentFolderID = nil
         currentPageID = nil
+    }
+
+    func attachWebView(_ view: PadBoardWebView) {
+        viewportApplyWork?.cancel()
+        viewportApplyWork = nil
+        webView = view
+        webViewReady = false
+        sceneReadyForEditing = false
+        isApplyingPendingScene = false
+    }
+
+    func handleWebViewReady(_ view: PadBoardWebView) {
+        guard webView === view else { return }
+        webViewReady = true
+        applyPendingSceneIfReady()
+    }
+
+    private func applyPendingSceneIfReady() {
+        guard webViewReady,
+              !isApplyingPendingScene,
+              let view = webView,
+              let scene = pendingScene,
+              let pageID = currentPageID
+        else { return }
+
+        isApplyingPendingScene = true
+        print("[DrawPad] 应用待加载场景 \(scene.count) 字节")
+        view.applyScene(scene) { [weak self, weak view] success in
+            guard let self, let view, self.webView === view else { return }
+            self.isApplyingPendingScene = false
+
+            if success, self.currentPageID == pageID, self.pendingScene == scene {
+                self.pendingScene = nil
+                self.sceneReadyForEditing = true
+                print("[DrawPad] 初始场景已加载，可安全编辑")
+                self.applyPendingViewportZoomWhenReady()
+                return
+            }
+
+            if !success {
+                print("[DrawPad] 初始场景加载失败，保持禁止回传")
+            }
+            if self.currentPageID != pageID || self.pendingScene != scene {
+                self.applyPendingSceneIfReady()
+            }
+        }
     }
 
     // MARK: - 派生数据
@@ -116,6 +182,11 @@ final class PadModel: ObservableObject {
             showToast(reason)
             connectedServerName = nil
 
+        case .sessionEnded(let reason):
+            print("[DrawPad] Mac 已结束会话: \(reason)")
+            disconnect()
+            showToast(reason)
+
         case .libraryChanged(let newSnapshot):
             print("[DrawPad] 收到项目树: \(newSnapshot.folders.count) 项目 \(newSnapshot.pages.count) 画板")
             snapshot = newSnapshot
@@ -130,35 +201,61 @@ final class PadModel: ObservableObject {
             print("[DrawPad] 收到画板: \(fileID.uuidString.prefix(8)) 元素字节=\(elementsJSON.count)")
             currentFolderID = folderID
             currentPageID = fileID
-            if webViewReady {
-                webView?.applyScene(elementsJSON)
-            } else {
-                // 画布未就绪：暂存，就绪后应用（避免场景丢失导致两端错位）
-                pendingScene = elementsJSON
+            sceneReadyForEditing = false
+            pendingScene = elementsJSON
+            if !webViewReady {
                 print("[DrawPad] 画布未就绪，场景暂存 \(elementsJSON.count) 字节")
             }
+            applyPendingSceneIfReady()
             toast = nil
 
         case .sceneUpdate(let fileID, let elementsJSON):
             print("[DrawPad] 远端场景更新: \(fileID.uuidString.prefix(8))")
             guard fileID == currentPageID else { return }
-            webView?.applyScene(elementsJSON)
+            if sceneReadyForEditing, webViewReady {
+                webView?.applyScene(elementsJSON)
+            } else {
+                pendingScene = elementsJSON
+                applyPendingSceneIfReady()
+            }
 
         case .viewportPanChanged(let centerX, let centerY):
             webView?.applyViewportPan(centerX, centerY)
 
         case .viewportZoomChanged(let zoom, let centerX, let centerY, let viewWidth, let viewHeight):
-            webView?.applyViewportZoom(
-                zoom,
-                centerX: centerX,
-                centerY: centerY,
-                peerWidth: viewWidth,
-                peerHeight: viewHeight
-            )
+            pendingViewportZoom = (zoom, centerX, centerY, viewWidth, viewHeight)
+            applyPendingViewportZoomWhenReady()
 
         case .serverError(let message):
             showToast(message)
         }
+    }
+
+    private func applyPendingViewportZoomWhenReady() {
+        guard webViewReady, sceneReadyForEditing, let view = webView,
+              pendingViewportZoom != nil else { return }
+
+        viewportApplyWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak view] in
+            guard let self, let view,
+                  self.webView === view,
+                  self.webViewReady,
+                  self.sceneReadyForEditing,
+                  let viewport = self.pendingViewportZoom else { return }
+
+            self.pendingViewportZoom = nil
+            self.viewportApplyWork = nil
+            view.applyViewportZoom(
+                viewport.zoom,
+                centerX: viewport.cx,
+                centerY: viewport.cy,
+                peerWidth: viewport.vw,
+                peerHeight: viewport.vh
+            )
+        }
+        viewportApplyWork = work
+        // Excalidraw 的 updateScene 会在下一轮渲染中提交；让视口应用排在初始场景之后。
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80), execute: work)
     }
 
     func showToast(_ text: String) {
@@ -213,7 +310,10 @@ final class PadModel: ObservableObject {
 
     /// 本地场景变化 → 节流推送 Mac（固定节奏 ~80ms，不因连续绘制而推迟）。
     func handleLocalSceneChange(_ json: String) {
-        guard case .connected = phase, let pageID = currentPageID else { return }
+        guard case .connected = phase,
+              sceneReadyForEditing,
+              let pageID = currentPageID
+        else { return }
         // 初始化期画布会多次自报空场景，直接忽略，防止清空对端内容
         if json == "[]" {
             return
@@ -255,13 +355,19 @@ final class PadModel: ObservableObject {
     func handleLocalViewportZoom(_ z: Double, _ cx: Double, _ cy: Double, _ vw: Double, _ vh: Double) {
         guard case .connected = phase else { return }
         viewportPushWork?.cancel()
+        viewportPushWork = nil
+        latestPan = nil
         client.send(
             .viewportZoomChanged(zoom: z, centerX: cx, centerY: cy, viewWidth: vw, viewHeight: vh)
         )
     }
 
-    /// iPad 本地缩放（仅本机视图，不同步）。
+    /// iPad 按钮缩放（同步到 Mac）。
     func localZoom(_ factor: Double) {
         webView?.localZoom(factor)
+    }
+
+    func fitToContent() {
+        webView?.fitToContent()
     }
 }

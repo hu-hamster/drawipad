@@ -1,7 +1,7 @@
 import Foundation
 
 /// 同步协议版本，两端不一致时拒绝连接。
-public let drawPadProtocolVersion = 2
+public let drawPadProtocolVersion = 3
 
 /// 项目树快照（Excalidraw 场景文件的组织结构：文件夹 → 文件）。
 /// 页面即一个 Excalidraw 场景（scene JSON），顺序由 Folder.pageIDs 决定。
@@ -31,6 +31,8 @@ public enum ClientMessage: Codable, Equatable {
 public enum ServerMessage: Codable, Equatable {
     case helloAccepted(serverName: String)
     case rejected(reason: String)
+    /// Mac 主动结束当前会话；iPad 收到后停止自动重连并返回连接页。
+    case sessionEnded(reason: String)
     /// 项目树有变化（新建/删除/重命名，或初次下发）。
     case libraryChanged(snapshot: LibrarySnapshot)
     /// 打开某文件：携带完整 Excalidraw 场景 JSON。

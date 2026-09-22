@@ -17,10 +17,8 @@
     }
     #app { position: fixed; inset: 0; }
     .excalidraw .App-menu, .excalidraw .App-toolbar { touch-action: manipulation; }
-    /* 仅移动形状工具岛（选择/矩形/画笔…）：默认顶部中央与自定义工具条重叠，
-       JS 挂 dpad-dock 标记并重挂载到根节点，由以下规则定位为右侧竖排垂直居中。
-       汉堡菜单/素材按钮保持原位。注意 Stack 是 grid 布局。 */
-    .App-toolbar-container.dpad-dock {
+    /* iPad 保留右侧竖排工具岛；Mac 使用 Excalidraw 原生响应式布局。 */
+    body.pad-layout .App-toolbar-container.dpad-dock {
       position: absolute !important;
       right: 12px !important;
       left: auto !important;
@@ -30,20 +28,19 @@
       margin: 0 !important;
       z-index: 4;
     }
-    .App-toolbar-container.dpad-dock .App-toolbar {
+    body.pad-layout .App-toolbar-container.dpad-dock .App-toolbar {
       width: max-content !important;
       align-items: center !important;
       flex-direction: column !important;
     }
-    .App-toolbar-container.dpad-dock .Stack_horizontal {
+    body.pad-layout .App-toolbar-container.dpad-dock .Stack_horizontal {
       grid-auto-flow: row !important;
       grid-template-rows: auto !important;
       grid-template-columns: none !important;
       grid-auto-columns: min-content !important;
       justify-items: center;
     }
-    /* 提示条不占位，悬浮在岛上方 */
-    .App-toolbar-container.dpad-dock .HintViewer {
+    body.pad-layout .App-toolbar-container.dpad-dock .HintViewer {
       position: absolute !important;
       left: 50% !important;
       top: -36px !important;
@@ -97,13 +94,17 @@
   <script>
     (function () {
       "use strict";
+      var isPadLayout =
+        /iPad/i.test(navigator.userAgent) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      document.body.classList.toggle("pad-layout", isPadLayout);
       var excal = null;
       var lastRemoteJSON = null;
       var suppressUntil = 0;
       var sceneVersion = 0;
       // 视口同步状态
       var viewportSuppressUntil = 0;
-      var lastSentViewport = null; // { sx, sy, z }
+      var lastSentViewport = null; // { cx, cy, z, vw, vh }
 
       function post(name, data) {
         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
@@ -141,22 +142,27 @@
             var sx = appState.scrollX || 0;
             var sy = appState.scrollY || 0;
             var z = (appState.zoom && appState.zoom.value) || 1;
-            var cx = window.innerWidth / 2 / z - sx;
-            var cy = window.innerHeight / 2 / z - sy;
+            var vw = window.innerWidth;
+            var vh = window.innerHeight;
+            var cx = vw / 2 / z - sx;
+            var cy = vh / 2 / z - sy;
             if (lastSentViewport !== null) {
               var zoomChanged = Math.abs(lastSentViewport.z - z) > 0.002;
+              var sizeChanged =
+                Math.abs((lastSentViewport.vw || vw) - vw) > 0.5 ||
+                Math.abs((lastSentViewport.vh || vh) - vh) > 0.5;
               var panChanged =
                 Math.abs(lastSentViewport.cx - cx) > 0.5 || Math.abs(lastSentViewport.cy - cy) > 0.5;
-              var payload = { cx: cx, cy: cy, vw: window.innerWidth, vh: window.innerHeight, z: z };
-              if (zoomChanged) {
-                lastSentViewport = { cx: cx, cy: cy, z: z };
+              var payload = { cx: cx, cy: cy, vw: vw, vh: vh, z: z };
+              if (zoomChanged || sizeChanged) {
+                lastSentViewport = payload;
                 post("viewportZoom", JSON.stringify(payload));
               } else if (panChanged) {
-                lastSentViewport = { cx: cx, cy: cy, z: z };
+                lastSentViewport = payload;
                 post("viewportPan", JSON.stringify(payload));
               }
             } else {
-              lastSentViewport = { cx: cx, cy: cy, z: z };
+              lastSentViewport = { cx: cx, cy: cy, z: z, vw: vw, vh: vh };
             }
           }
         }
@@ -226,8 +232,9 @@
         return JSON.stringify(excal.getSceneElements());
       };
 
-      // 工具岛重挂载：打 dpad-dock 标记 + 移到 .excalidraw 根下（配合 CSS 右侧竖排定位）
-      function relocateToolbar() {
+      // iPad 使用定制竖排工具岛；Mac 不重挂载，保留官方响应式结构。
+      function relocatePadToolbar() {
+        if (!isPadLayout) return;
         var container = document.querySelector(".excalidraw .App-toolbar-container");
         var root = document.querySelector(".excalidraw");
         if (container && root) {
@@ -237,8 +244,8 @@
           }
         }
       }
-      relocateToolbar();
-      setInterval(relocateToolbar, 1000);
+      relocatePadToolbar();
+      if (isPadLayout) setInterval(relocatePadToolbar, 1000);
 
       // 是否已就绪
       window.__isReady = function () {
@@ -259,7 +266,10 @@
         try {
           var z = currentZoom();
           viewportSuppressUntil = Date.now() + 300;
-          lastSentViewport = { cx: cx, cy: cy, z: z };
+          lastSentViewport = {
+            cx: cx, cy: cy, z: z,
+            vw: window.innerWidth, vh: window.innerHeight
+          };
           excal.updateScene({
             appState: {
               scrollX: window.innerWidth / 2 / z - cx,
@@ -282,7 +292,10 @@
           );
           var newZ = clampZoom(z * ratio);
           viewportSuppressUntil = Date.now() + 300;
-          lastSentViewport = { cx: cx, cy: cy, z: newZ };
+          lastSentViewport = {
+            cx: cx, cy: cy, z: newZ,
+            vw: window.innerWidth, vh: window.innerHeight
+          };
           excal.updateScene({
             appState: {
               zoom: { value: newZ },
@@ -305,7 +318,48 @@
         }
       }
 
-      // iPad 本地缩放（视口中心为锚，不广播）
+      // 缩放并居中显示全部有效元素；视口改变通过现有通道同步到另一端。
+      window.__fitToContent = function () {
+        if (!excal) return "not-ready";
+        try {
+          var elements = excal.getSceneElements().filter(function (e) {
+            return !e.isDeleted && isFinite(e.x) && isFinite(e.y) &&
+              isFinite(e.width) && isFinite(e.height);
+          });
+          if (!elements.length) return "empty";
+
+          var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          elements.forEach(function (e) {
+            minX = Math.min(minX, e.x, e.x + e.width);
+            minY = Math.min(minY, e.y, e.y + e.height);
+            maxX = Math.max(maxX, e.x, e.x + e.width);
+            maxY = Math.max(maxY, e.y, e.y + e.height);
+          });
+
+          var vw = window.innerWidth, vh = window.innerHeight;
+          var boundsW = Math.max(1, maxX - minX), boundsH = Math.max(1, maxY - minY);
+          var padding = 48;
+          var z = clampZoom(Math.min((vw - padding * 2) / boundsW, (vh - padding * 2) / boundsH));
+          var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+          var payload = { cx: cx, cy: cy, vw: vw, vh: vh, z: z };
+
+          viewportSuppressUntil = Date.now() + 300;
+          lastSentViewport = payload;
+          excal.updateScene({
+            appState: {
+              zoom: { value: z },
+              scrollX: vw / 2 / z - cx,
+              scrollY: vh / 2 / z - cy
+            }
+          });
+          post("viewportZoom", JSON.stringify(payload));
+          return "ok:" + z.toFixed(3);
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      // iPad 按钮缩放：以视口中心为锚，并立即广播给 Mac。
       window.__localZoom = function (factor) {
         if (!excal) return "not-ready";
         try {
@@ -318,7 +372,10 @@
           var cx = window.innerWidth / 2 / oldZ - oldSx;
           var cy = window.innerHeight / 2 / oldZ - oldSy;
           viewportSuppressUntil = Date.now() + 700;
-          lastSentViewport = null; // 本地缩放后暂停广播，直到下一次显式平移/捏合
+          lastSentViewport = {
+            cx: cx, cy: cy, z: newZ,
+            vw: window.innerWidth, vh: window.innerHeight
+          };
           excal.updateScene({
             appState: {
               zoom: { value: newZ },
@@ -326,6 +383,13 @@
               scrollY: window.innerHeight / 2 / newZ - cy
             }
           });
+          post("viewportZoom", JSON.stringify({
+            cx: cx,
+            cy: cy,
+            vw: window.innerWidth,
+            vh: window.innerHeight,
+            z: newZ
+          }));
           return "ok:" + newZ.toFixed(3);
         } catch (err) {
           return "error:" + err;

@@ -9,7 +9,6 @@ struct DrawPadMacApp: App {
         WindowGroup("DrawPad") {
             MainView()
                 .environmentObject(app)
-                .frame(minWidth: 900, minHeight: 600)
         }
         .windowToolbarStyle(.unified)
     }

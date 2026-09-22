@@ -94,14 +94,21 @@ struct CanvasScreen: View {
             } label: {
                 Image(systemName: "minus.magnifyingglass")
             }
-            .help("本地缩小（不同步）")
+            .help("缩小（同步到 Mac）")
 
             Button {
                 model.localZoom(1.25)
             } label: {
                 Image(systemName: "plus.magnifyingglass")
             }
-            .help("本地放大（不同步）")
+            .help("放大（同步到 Mac）")
+
+            Button {
+                model.fitToContent()
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .help("适应画板内容（同步到 Mac）")
 
             moreMenu
 
