@@ -82,7 +82,13 @@ struct ExcalidrawPadWebView: UIViewRepresentable {
         let view = PadBoardWebView()
         view.onReady = { [weak model] in
             print("[DrawPad] iPad 画布就绪 ✓ (Excalidraw mounted)")
-            model?.webViewReady = true
+            guard let model else { return }
+            model.webViewReady = true
+            if let pending = model.pendingScene {
+                model.pendingScene = nil
+                print("[DrawPad] 应用暂存场景 \(pending.count) 字节")
+                model.webView?.applyScene(pending)
+            }
         }
         view.onSceneChange = { [weak model] json in
             model?.handleLocalSceneChange(json)

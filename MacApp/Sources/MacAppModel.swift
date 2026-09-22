@@ -73,6 +73,7 @@ final class MacAppModel: ObservableObject {
     /// 本端 Excalidraw 场景变化：存盘 + 防抖推送给 iPad。
     func handleLocalSceneChange(_ json: String) {
         guard let id = selectedPageID else { return }
+        BoardWebViewMessageProxy.diag("本地场景变化: \(json.count) 字节 (file \(id.uuidString.prefix(6)))")
         store.scheduleSaveScene(id, json: json)
         guard server.hasClient else { return }
         scenePushWork?.cancel()
@@ -210,6 +211,7 @@ final class MacAppModel: ObservableObject {
             }
 
         case .sceneUpdate(let fileID, let elementsJSON):
+            BoardWebViewMessageProxy.diag("iPad 场景推送: \(elementsJSON.count) 字节 (file \(fileID.uuidString.prefix(6)), 当前 \(selectedPageID?.uuidString.prefix(6) ?? "-"))")
             store.scheduleSaveScene(fileID, json: elementsJSON)
             if fileID == selectedPageID {
                 webView?.applyScene(elementsJSON)

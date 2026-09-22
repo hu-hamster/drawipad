@@ -12,6 +12,8 @@ final class PadModel: ObservableObject {
     @Published var toast: String?
     @Published var connectedServerName: String?
     @Published var webViewReady = false
+    /// 画布就绪前到达的场景（就绪后应用）。
+    var pendingScene: String?
     /// 已成功连接过（断线重连时保持画布界面）。
     @Published var wasConnected = false
 
@@ -121,10 +123,16 @@ final class PadModel: ObservableObject {
             }
 
         case .fileOpened(let fileID, let folderID, let elementsJSON):
-            print("[DrawPad] 收到画板: \(fileID.uuidString.prefix(8)) 元素数=\((elementsJSON as NSString).length / 100)")
+            print("[DrawPad] 收到画板: \(fileID.uuidString.prefix(8)) 元素字节=\(elementsJSON.count)")
             currentFolderID = folderID
             currentPageID = fileID
-            webView?.applyScene(elementsJSON)
+            if webViewReady {
+                webView?.applyScene(elementsJSON)
+            } else {
+                // 画布未就绪：暂存，就绪后应用（避免场景丢失导致两端错位）
+                pendingScene = elementsJSON
+                print("[DrawPad] 画布未就绪，场景暂存 \(elementsJSON.count) 字节")
+            }
             toast = nil
 
         case .sceneUpdate(let fileID, let elementsJSON):
