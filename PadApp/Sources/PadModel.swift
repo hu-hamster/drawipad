@@ -26,10 +26,13 @@ final class PadModel: ObservableObject {
 
     init() {
         browser.onUpdate = { [weak self] items in
-            self?.discovered = items
+            guard let self else { return }
+            self.discovered = items
+            print("[DrawPad] 发现 Mac 数量: \(items.count) \(items.map(\.name))")
         }
         client.onPhase = { [weak self] phase in
             guard let self else { return }
+            print("[DrawPad] 连接状态: \(phase)")
             self.phase = phase
             switch phase {
             case .connected:
@@ -99,13 +102,16 @@ final class PadModel: ObservableObject {
     private func handle(_ message: ServerMessage) {
         switch message {
         case .helloAccepted(let serverName):
+            print("[DrawPad] 已被 Mac 接受: \(serverName)")
             connectedServerName = serverName
 
         case .rejected(let reason):
+            print("[DrawPad] 被拒绝: \(reason)")
             showToast(reason)
             connectedServerName = nil
 
         case .libraryChanged(let newSnapshot):
+            print("[DrawPad] 收到项目树: \(newSnapshot.folders.count) 项目 \(newSnapshot.pages.count) 画板")
             snapshot = newSnapshot
             if let id = currentFolderID,
                newSnapshot.folders.contains(where: { $0.id == id }) {
@@ -115,12 +121,14 @@ final class PadModel: ObservableObject {
             }
 
         case .fileOpened(let fileID, let folderID, let elementsJSON):
+            print("[DrawPad] 收到画板: \(fileID.uuidString.prefix(8)) 元素数=\((elementsJSON as NSString).length / 100)")
             currentFolderID = folderID
             currentPageID = fileID
             webView?.applyScene(elementsJSON)
             toast = nil
 
         case .sceneUpdate(let fileID, let elementsJSON):
+            print("[DrawPad] 远端场景更新: \(fileID.uuidString.prefix(8))")
             guard fileID == currentPageID else { return }
             webView?.applyScene(elementsJSON)
 
@@ -181,6 +189,7 @@ final class PadModel: ObservableObject {
 
     func handleLocalSceneChange(_ json: String) {
         guard case .connected = phase, let pageID = currentPageID else { return }
+        print("[DrawPad] 本地场景变化 → 推送 (\(json.count) 字节)")
         scenePushWork?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }

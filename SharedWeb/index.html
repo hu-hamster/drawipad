@@ -81,6 +81,8 @@
           if (Date.now() < suppressUntil) return;
           var json = JSON.stringify(elements);
           if (json === lastRemoteJSON) return;
+          // 尚未与对端同步过时，不广播初始空场景（避免挂载竞态清空对端画布）
+          if (lastRemoteJSON === null && elements.length === 0) return;
           sceneVersion += 1;
           post("sceneChange", json);
         }
