@@ -42,11 +42,14 @@
     }
     body.pad-layout .App-toolbar-container.dpad-dock .HintViewer {
       position: absolute !important;
-      left: 50% !important;
-      top: -36px !important;
-      transform: translateX(-50%) !important;
-      width: max-content !important;
-      white-space: nowrap;
+      left: auto !important;
+      right: calc(100% + 10px) !important;
+      top: 50% !important;
+      transform: translateY(-50%) !important;
+      writing-mode: vertical-rl !important;
+      white-space: nowrap !important;
+      max-height: 92vh;
+      overflow: hidden;
     }
     /* 移除主菜单"Excalidraw links"外链分组（GitHub/X/Discord）及其分隔线 */
     .excalidraw .dropdown-menu-group:has(a[href*="github.com"]),
