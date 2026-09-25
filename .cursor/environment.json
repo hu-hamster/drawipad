@@ -1,0 +1,16 @@
+{
+  "name": "DrawPad",
+  "install": "python3 --version",
+  "ports": [
+    {
+      "name": "SharedWeb",
+      "port": 5173
+    }
+  ],
+  "terminals": [
+    {
+      "name": "SharedWeb server",
+      "command": "python3 -m http.server 5173 --directory SharedWeb"
+    }
+  ]
+}
