@@ -5,12 +5,21 @@ public struct Folder: Codable, Identifiable, Equatable, Hashable, Sendable {
     public var id: UUID
     public var name: String
     public var createdAt: Date
+    /// 父目录；nil 表示根目录。可选字段保证旧版 library.json / 协议载荷仍可解码。
+    public var parentID: UUID?
     public var pageIDs: [UUID]
 
-    public init(id: UUID = UUID(), name: String, createdAt: Date = Date(), pageIDs: [UUID] = []) {
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        createdAt: Date = Date(),
+        parentID: UUID? = nil,
+        pageIDs: [UUID] = []
+    ) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
+        self.parentID = parentID
         self.pageIDs = pageIDs
     }
 }

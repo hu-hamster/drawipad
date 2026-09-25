@@ -19,6 +19,11 @@ struct MainView: View {
         .sheet(isPresented: $app.isCreatingFolder) {
             NewProjectSheet()
         }
+        .alert("无法导入 Excalidraw 文件", isPresented: importErrorPresented) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(app.importError ?? "未知错误")
+        }
     }
 
     @ViewBuilder
@@ -44,13 +49,13 @@ struct MainView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(.secondary)
             if app.store.folders.isEmpty {
-                Text("创建一个项目文件夹开始绘制")
+                Text("创建一个目录开始绘制")
                     .foregroundStyle(.secondary)
-                Button("新建文件夹") {
+                Button("新建目录") {
                     app.addFolder()
                 }
             } else {
-                Text("此项目还没有画板")
+                Text("此目录还没有画板")
                     .foregroundStyle(.secondary)
                 Button {
                     let folderID = app.selectedFolderID ?? app.store.folders.last?.id
@@ -111,6 +116,13 @@ struct MainView: View {
             .help("新建画板")
 
             Button {
+                app.importExcalidraw()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .help("导入 Excalidraw（含 .excalidraw.md）")
+
+            Button {
                 app.fitToContent()
             } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -159,6 +171,15 @@ struct MainView: View {
             .frame(width: 1, height: 16)
     }
 
+    private var importErrorPresented: Binding<Bool> {
+        Binding(
+            get: { app.importError != nil },
+            set: { isPresented in
+                if !isPresented { app.importError = nil }
+            }
+        )
+    }
+
     private var connectionStatus: some View {
         Menu {
             if let name = app.clientName {
@@ -189,55 +210,34 @@ struct MainView: View {
 struct SidebarView: View {
     @EnvironmentObject private var app: MacAppModel
     @State private var expandedFolderIDs: Set<UUID> = []
+    @State private var pagePendingDeletion: PageMeta?
+    @State private var folderPendingDeletion: Folder?
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("项目", systemImage: "square.stack.3d.up")
+                Label("目录", systemImage: "square.stack.3d.up")
                     .font(.headline)
                 Spacer()
                 Button {
-                    app.addFolder()
+                    app.addFolder(parentID: nil)
                 } label: {
                     Image(systemName: "folder.badge.plus")
                 }
                 .buttonStyle(.borderless)
-                .help("新建项目")
+                .help("新建根目录")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
             List(selection: pageSelection) {
-                ForEach(app.store.folders) { folder in
-                    DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
-                        ForEach(app.store.pages(in: folder.id)) { page in
-                            Label(page.name, systemImage: "scribble.variable")
-                                .tag(page.id as UUID?)
-                                .contextMenu {
-                                    Button("重命名画板…") {
-                                        app.beginRename(.page(page.id))
-                                    }
-                                    Divider()
-                                    Button("删除画板", role: .destructive) {
-                                        app.deletePageLocal(page.id)
-                                    }
-                                }
-                        }
-                    } label: {
-                        projectHeader(folder)
-                    }
-                    .contextMenu {
-                        Button("新建画板") {
-                            app.addPage(in: folder.id)
-                        }
-                        Button("重命名项目…") {
-                            app.beginRename(.folder(folder.id))
-                        }
-                        Divider()
-                        Button("删除项目", role: .destructive) {
-                            app.deleteFolderLocal(folder.id)
-                        }
-                    }
+                ForEach(app.store.rootFolders) { folder in
+                    FolderNodeView(
+                        folder: folder,
+                        expandedFolderIDs: $expandedFolderIDs,
+                        pagePendingDeletion: $pagePendingDeletion,
+                        folderPendingDeletion: $folderPendingDeletion
+                    )
                 }
             }
             .listStyle(.sidebar)
@@ -245,15 +245,127 @@ struct SidebarView: View {
         .overlay {
             if app.store.folders.isEmpty {
                 ContentUnavailableView(
-                    "还没有项目",
+                    "还没有目录",
                     systemImage: "folder.badge.plus",
-                    description: Text("点击左上角 + 创建项目")
+                    description: Text("点击左上角 + 创建根目录")
                 )
             }
         }
+        .confirmationDialog(
+            pagePendingDeletion.map { "删除画板“\($0.name)”？" } ?? "删除画板？",
+            isPresented: deletePageDialogPresented,
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let page = pagePendingDeletion {
+                    app.deletePageLocal(page.id)
+                }
+                pagePendingDeletion = nil
+            }
+            Button("取消", role: .cancel) {
+                pagePendingDeletion = nil
+            }
+        } message: {
+            Text("此操作会删除该画板及其绘图内容，不会删除目录中的其他画板。")
+        }
+        .confirmationDialog(
+            folderPendingDeletion.map { "删除目录“\($0.name)”？" } ?? "删除目录？",
+            isPresented: deleteFolderDialogPresented,
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let folder = folderPendingDeletion {
+                    app.deleteFolderLocal(folder.id)
+                }
+                folderPendingDeletion = nil
+            }
+            Button("取消", role: .cancel) {
+                folderPendingDeletion = nil
+            }
+        } message: {
+            Text("此操作会删除该目录、所有子目录及其中的全部画板。")
+        }
     }
 
-    private func projectHeader(_ folder: Folder) -> some View {
+    private var pageSelection: Binding<UUID?> {
+        Binding(
+            get: { app.selectedPageID },
+            set: { app.selectPage($0, remote: false) }
+        )
+    }
+
+    private var deletePageDialogPresented: Binding<Bool> {
+        Binding(
+            get: { pagePendingDeletion != nil },
+            set: { isPresented in
+                if !isPresented { pagePendingDeletion = nil }
+            }
+        )
+    }
+
+    private var deleteFolderDialogPresented: Binding<Bool> {
+        Binding(
+            get: { folderPendingDeletion != nil },
+            set: { isPresented in
+                if !isPresented { folderPendingDeletion = nil }
+            }
+        )
+    }
+}
+
+private struct FolderNodeView: View {
+    @EnvironmentObject private var app: MacAppModel
+    let folder: Folder
+    @Binding var expandedFolderIDs: Set<UUID>
+    @Binding var pagePendingDeletion: PageMeta?
+    @Binding var folderPendingDeletion: Folder?
+
+    var body: some View {
+        DisclosureGroup(isExpanded: folderExpansion) {
+            ForEach(app.store.childFolders(of: folder.id)) { child in
+                FolderNodeView(
+                    folder: child,
+                    expandedFolderIDs: $expandedFolderIDs,
+                    pagePendingDeletion: $pagePendingDeletion,
+                    folderPendingDeletion: $folderPendingDeletion
+                )
+            }
+            ForEach(app.store.pages(in: folder.id)) { page in
+                Label(page.name, systemImage: "scribble.variable")
+                    .tag(page.id as UUID?)
+                    .contextMenu {
+                        Button("重命名画板…") {
+                            app.beginRename(.page(page.id))
+                        }
+                        Divider()
+                        Button("删除画板", role: .destructive) {
+                            pagePendingDeletion = page
+                        }
+                    }
+            }
+        } label: {
+            folderHeader
+                .contextMenu {
+                    Button("新建画板") {
+                        expandedFolderIDs.insert(folder.id)
+                        app.addPage(in: folder.id)
+                    }
+                    Button("新建子目录…") {
+                        expandedFolderIDs.insert(folder.id)
+                        app.addFolder(parentID: folder.id)
+                    }
+                    Button("重命名目录…") {
+                        app.beginRename(.folder(folder.id))
+                    }
+                    Divider()
+                    Button("删除目录", role: .destructive) {
+                        folderPendingDeletion = folder
+                    }
+                }
+        }
+    }
+
+    private var folderHeader: some View {
         HStack(spacing: 6) {
             Button {
                 app.selectFolderFromUI(folder.id)
@@ -279,40 +391,40 @@ struct SidebarView: View {
                 }
             }
 
-            Button {
-                expandedFolderIDs.insert(folder.id)
-                app.addPage(in: folder.id)
+            Menu {
+                Button("新建画板") {
+                    expandedFolderIDs.insert(folder.id)
+                    app.addPage(in: folder.id)
+                }
+                Button("新建子目录") {
+                    expandedFolderIDs.insert(folder.id)
+                    app.addFolder(parentID: folder.id)
+                }
             } label: {
                 Image(systemName: "plus")
                     .font(.caption.weight(.semibold))
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
-            .help("在「\(folder.name)」中新建画板")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("在「\(folder.name)」中新建内容")
         }
     }
 
-    private func folderExpansion(_ id: UUID) -> Binding<Bool> {
+    private var folderExpansion: Binding<Bool> {
         Binding(
             get: {
-                expandedFolderIDs.contains(id)
-                    || app.selectedPageID.map { app.store.folder(id)?.pageIDs.contains($0) == true } == true
+                expandedFolderIDs.contains(folder.id)
+                    || app.store.containsFolder(app.selectedFolderID, within: folder.id)
             },
             set: { isExpanded in
                 if isExpanded {
-                    expandedFolderIDs.insert(id)
+                    expandedFolderIDs.insert(folder.id)
                 } else {
-                    expandedFolderIDs.remove(id)
+                    expandedFolderIDs.remove(folder.id)
                 }
             }
-        )
-    }
-
-    private var pageSelection: Binding<UUID?> {
-        Binding(
-            get: { app.selectedPageID },
-            set: { app.selectPage($0, remote: false) }
         )
     }
 }
@@ -323,14 +435,21 @@ struct NewProjectSheet: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Text("新建项目")
+            Text(app.newFolderParentID == nil ? "新建根目录" : "新建子目录")
                 .font(.headline)
-            TextField("项目名称", text: $app.newFolderName)
+            if let parentID = app.newFolderParentID,
+               let parent = app.store.folder(parentID) {
+                Text("位置：\(parent.name)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            TextField("目录名称", text: $app.newFolderName)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused)
                 .onSubmit(createProject)
             HStack(spacing: 12) {
                 Button("取消") {
+                    app.newFolderParentID = nil
                     app.isCreatingFolder = false
                 }
                 .keyboardShortcut(.cancelAction)
@@ -394,7 +513,7 @@ struct RenameSheet: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Text(app.renameTarget?.isFolder == true ? "重命名文件夹" : "重命名画板")
+            Text(app.renameTarget?.isFolder == true ? "重命名目录" : "重命名画板")
                 .font(.headline)
             TextField("名称", text: $app.renameText)
                 .textFieldStyle(.roundedBorder)

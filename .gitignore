@@ -11,6 +11,11 @@ DerivedData/
 # macOS
 .DS_Store
 
+# Obsidian plugin build output and installed dependencies
+ObsidianPlugin/node_modules/
+ObsidianPlugin/main.js
+WebBridge/node_modules/
+
 # 生成产物
 build/
 

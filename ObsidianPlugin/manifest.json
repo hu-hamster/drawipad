@@ -1,0 +1,10 @@
+{
+  "id": "drawpad-sync",
+  "name": "DrawPad Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Sync Excalidraw drawings in this vault with the DrawPad iPad app over the local network.",
+  "author": "jing Hu",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

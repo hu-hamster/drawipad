@@ -15,8 +15,9 @@ iPad 与 Mac 通过本地网络（Bonjour 自动发现）连接后，两端共�
 │   ├── index.html         # 嵌入页 + JS 桥（onExcalidrawAPI / updateScene / onChange）
 │   └── vendor/            # esbuild 打包产物（Excalidraw + React 19 单文件 IIFE）
 ├── MacApp/Sources/        # macOS 端：ExcalidrawWebView（含导出下载处理）
-│                          # 侧边栏项目/画板管理 + 场景持久化
-└── PadApp/Sources/        # iPadOS 端：同款 Excalidraw 画布 + 连接页 + 实时同步
+│                          # 多级目录树/画板管理 + 场景持久化
+├── PadApp/Sources/        # iPadOS 端：同款 Excalidraw 画布 + 连接页 + 实时同步
+└── ObsidianPlugin/        # 独立的 Obsidian 桌面插件（不参与 Xcode 构建）
 ```
 
 ### 同步原理
@@ -59,11 +60,36 @@ Xcode 打开 `DrawPad.xcodeproj` → scheme **DrawPadMac** → ⌘R（本地 ad-
 ### 使用
 1. Mac 端打开 DrawPad（自动广播）
 2. iPad 打开 DrawPad → 点你的 Mac → Mac 上点"允许"
-3. 两端任意编辑，实时同步；iPad 顶栏可切项目/翻页/新建/删除；Excalidraw 自带工具栏画图
-4. Mac 侧边栏管理项目与画板；Excalidraw 菜单导出的文件自动存到"下载"
+3. 两端任意编辑，实时同步；iPad 顶栏可切目录/翻页/新建/删除；Excalidraw 自带工具栏画图
+4. Mac 侧边栏支持任意层级的目录树，可在任一目录中新建子目录和画板；删除目录前会提示并递归删除其中内容
+5. Excalidraw 菜单导出的文件自动存到“下载”。要导入 Obsidian 的 `.excalidraw.md`，点击 Mac 顶栏的“导入 Excalidraw”按钮；也支持原生 `.excalidraw` 与 JSON 场景
+
+### Obsidian 插件（独立构建）
+
+`ObsidianPlugin/` 是单独的桌面插件工程，不会改动 Mac/iPad 应用。它直接复用 Vault 的原生目录树，把各层目录及其中的 `.excalidraw.md` / `.excalidraw` 文件通过同一套 Bonjour + TCP 协议提供给 DrawPad iPad 端，不维护额外的目录数据。
+
+```bash
+cd ObsidianPlugin
+npm install
+npm run build
+```
+
+将生成的 `main.js`、`manifest.json`、`styles.css` 复制到 Vault 的 `.obsidian/plugins/drawpad-sync/` 后，在 Obsidian 设置中启用 **DrawPad Sync**。插件仅支持 Obsidian 桌面端，因为它需要本机 TCP/Bonjour 服务；原有 Mac/iPad app 不需要重新接入插件。
+
+### 浏览器版本
+
+`WebBridge/` + `WebApp/` 是独立的浏览器版本。它复用现有 Excalidraw 网页资产，通过本地 WebSocket/Bonjour Bridge 与 iPad 同步，不参与 Mac/iPad 的 Xcode 构建：
+
+```bash
+cd WebBridge
+npm install
+npm start
+```
+
+然后访问 `http://127.0.0.1:8787/`，在 iPad 的 DrawPad 连接列表中选择 **DrawPad Web**。网页侧支持可展开的多级目录树、子目录创建/重命名/递归删除，以及目录内画板管理；已有的单级浏览器数据会自动迁移成根目录。
 
 ## 调试
 
 - Mac app 启动参数 `--auto-accept-pairing`：自动接受配对（自动化联调）
 - 诊断日志：`~/Library/Containers/com.hujing.drawpad.mac/Data/tmp/drawpad_diag.log`（页面加载/挂载/桥错误）
-- 协议版本 v2（v1 PencilKit 版本见 git 历史 tag: 初始提交）
+- 协议版本 v3（v1 PencilKit 版本见 git 历史 tag: 初始提交）

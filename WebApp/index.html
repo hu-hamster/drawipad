@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>DrawPad Web</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
+  <script src="vendor/excalidraw.production.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">DrawPad Web</div>
+    <div id="status" class="status">正在连接 Bridge…</div>
+    <div class="actions">
+      <button id="new-folder">新建目录</button>
+      <button id="new-page">新建画板</button>
+      <button id="delete-page" class="danger">删除画板</button>
+    </div>
+  </header>
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-title">目录树</div>
+      <div id="tree" class="tree"></div>
+      <div class="sidebar-hint">画板保存在此浏览器的本地存储中。</div>
+    </aside>
+    <main id="app" class="canvas"></main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

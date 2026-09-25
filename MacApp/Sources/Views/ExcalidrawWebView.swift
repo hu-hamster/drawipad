@@ -8,6 +8,7 @@ final class BoardWebView: WKWebView {
     var onReady: (() -> Void)?
     var onSceneChange: ((String) -> Void)?
     var onBridgeError: ((String) -> Void)?
+    var onFileOpenError: ((String) -> Void)?
     var onViewportPan: ((Double, Double) -> Void)?
     var onViewportZoom: ((Double, Double, Double, Double, Double) -> Void)?
 
@@ -301,15 +302,49 @@ extension BoardWebView: WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
 
-        var contentTypes: [UTType] = [.json]
-        for ext in ["excalidraw", "excalidrawlib"] {
-            if let type = UTType(filenameExtension: ext) {
-                contentTypes.append(type)
+        // Excalidraw's HTML input only declares its native extensions.  On
+        // macOS that makes Obsidian's `.excalidraw.md` visible but disabled.
+        // Accept data files here; native Excalidraw files continue through to
+        // WebKit, while Markdown is parsed by our native importer below.
+        panel.allowedContentTypes = [.data]
+        panel.begin { [weak self] response in
+            guard response == .OK, !panel.urls.isEmpty else {
+                completionHandler(nil)
+                return
+            }
+
+            if panel.urls.count == 1,
+               panel.urls[0].pathExtension.lowercased() == "md" {
+                // Cancel the HTML file input because Excalidraw itself cannot
+                // decode Obsidian's `compressed-json` Markdown payload.
+                completionHandler(nil)
+                self?.openExcalidrawMarkdown(panel.urls[0])
+            } else {
+                completionHandler(panel.urls)
             }
         }
-        panel.allowedContentTypes = contentTypes
-        panel.begin { response in
-            completionHandler(response == .OK ? panel.urls : nil)
+    }
+
+    private func openExcalidrawMarkdown(_ url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let scene = ExcalidrawImport.parseScene(fromText: text) else {
+                onFileOpenError?("未能从“\(url.lastPathComponent)”找到有效的 Excalidraw 场景。")
+                return
+            }
+
+            // Match Excalidraw's native Open behavior: replace the current
+            // canvas.  Persist explicitly as well, so the scene is retained
+            // even if the embedded app does not emit an immediate onChange.
+            applyScene(scene)
+            onSceneChange?(scene)
+        } catch {
+            onFileOpenError?("无法读取“\(url.lastPathComponent)”：\(error.localizedDescription)")
         }
     }
 
@@ -369,6 +404,9 @@ struct ExcalidrawWebView: NSViewRepresentable {
         }
         view.onBridgeError = { error in
             BoardWebViewMessageProxy.diag("bridge callback: \(error)")
+        }
+        view.onFileOpenError = { [weak model] message in
+            model?.importError = message
         }
         view.attachHandlers()
         model.webView = view

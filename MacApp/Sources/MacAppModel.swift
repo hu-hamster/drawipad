@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 /// 重命名目标。
 enum RenameTarget: Identifiable {
@@ -40,8 +42,10 @@ final class MacAppModel: ObservableObject {
     @Published var renameText = ""
     @Published var isCreatingFolder = false
     @Published var newFolderName = ""
+    @Published var newFolderParentID: UUID?
     @Published var confirmDeleteCurrent = false
     @Published var webViewReady = false
+    @Published var importError: String?
 
     /// 调试参数：自动接受配对（本地自动化测试用，正常使用不传）。
     private let autoAcceptPairing = ProcessInfo.processInfo.arguments.contains("--auto-accept-pairing")
@@ -368,17 +372,19 @@ final class MacAppModel: ObservableObject {
 
     // MARK: - 本地管理操作（UI 调用）
 
-    func addFolder() {
+    func addFolder(parentID: UUID? = nil) {
         newFolderName = ""
+        newFolderParentID = parentID
         isCreatingFolder = true
     }
 
     func createFolderFromUI() {
         let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let folder = store.createFolder(name: name)
+        let folder = store.createFolder(name: name, parentID: newFolderParentID)
         selectedFolderID = folder.id
         selectedPageID = nil
+        newFolderParentID = nil
         showCurrentSceneInWebView()
         pushLibrary()
     }
@@ -389,6 +395,58 @@ final class MacAppModel: ObservableObject {
         let meta = store.createPage(folderID: targetFolder, afterPageID: selectedPageID)
         pushLibrary()
         selectPage(meta.id, remote: false)
+    }
+
+    // MARK: - Excalidraw 导入
+
+    /// 选择并导入原生 .excalidraw 或 Obsidian 的 .excalidraw.md 文件。
+    func importExcalidraw() {
+        let panel = NSOpenPanel()
+        panel.title = "导入 Excalidraw 画板"
+        panel.message = "支持 .excalidraw、.excalidraw.md 和 JSON 场景文件"
+        panel.prompt = "导入"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        // `.excalidraw.md` is commonly registered as
+        // `net.daringfireball.markdown`, while constructing a type from the
+        // `md` extension can produce a different dynamic identifier.  That
+        // mismatch leaves the file visible in NSOpenPanel but disables the
+        // Import button.  Accept data files here and let ExcalidrawImport do
+        // the actual (strict) content validation below.
+        panel.allowedContentTypes = [.data]
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.importExcalidraw(from: url)
+        }
+    }
+
+    private func importExcalidraw(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let scene = ExcalidrawImport.parseScene(fromText: text) else {
+                importError = "未能从“\(url.lastPathComponent)”找到有效的 Excalidraw 场景。"
+                return
+            }
+
+            let folderID = selectedFolderID ?? store.folders.last?.id ?? store.createFolder(name: "导入").id
+            let page = store.createPage(
+                folderID: folderID,
+                afterPageID: selectedPageID,
+                name: ExcalidrawImport.pageName(fromFileName: url.lastPathComponent),
+                initialSceneJSON: scene
+            )
+            pushLibrary()
+            selectPage(page.id, remote: false)
+        } catch {
+            importError = "无法读取“\(url.lastPathComponent)”：\(error.localizedDescription)"
+        }
     }
 
     func deletePageLocal(_ id: UUID) {

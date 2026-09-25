@@ -22,6 +22,7 @@ targets:
         type: folder
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.hujing.drawpad.mac
         PRODUCT_NAME: DrawPad
     info:
@@ -52,6 +53,7 @@ targets:
         type: folder
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.hujing.drawpad.pad
         PRODUCT_NAME: DrawPad
         TARGETED_DEVICE_FAMILY: "2"

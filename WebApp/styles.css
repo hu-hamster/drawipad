@@ -1,0 +1,34 @@
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; background: #f7f7f5; color: #292927; }
+button { border: 1px solid #d1d1cd; border-radius: 7px; background: #fff; color: #292927; padding: 7px 12px; cursor: pointer; }
+button:hover { background: #f0f0ed; }
+button.danger { color: #a52828; }
+.topbar { height: 52px; box-sizing: border-box; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid #deded9; background: rgba(255,255,255,.92); }
+.brand { font-weight: 700; letter-spacing: .2px; }
+.status { color: #777; font-size: 13px; flex: 1; }
+.status.connected { color: #287b45; }
+.status.warn { color: #a56a14; }
+.actions { display: flex; gap: 8px; }
+.workspace { display: flex; width: 100%; height: calc(100% - 52px); }
+.sidebar { width: 300px; box-sizing: border-box; padding: 16px 10px; border-right: 1px solid #deded9; background: #fbfbf9; overflow: auto; }
+.sidebar-title { font-size: 14px; font-weight: 700; padding: 0 8px 12px; }
+.tree { display: grid; gap: 3px; min-width: 240px; }
+.folder-node { min-width: 0; }
+.folder-row, .page-row { min-height: 32px; display: flex; align-items: center; gap: 2px; border-radius: 7px; }
+.folder-row.selected, .page-row.selected { background: #dcecff; }
+.folder-contents { margin-left: 17px; padding-left: 7px; border-left: 1px solid #d9d9d4; }
+.disclosure, .folder-name, .page-name, .tree-action { border-color: transparent; background: transparent; padding: 4px; }
+.disclosure { width: 22px; flex: none; color: #666; }
+.folder-name, .page-name { min-width: 0; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-count { color: #888; font-size: 11px; min-width: 12px; text-align: center; }
+.tree-action { display: none; flex: none; color: #666; font-size: 11px; }
+.folder-row:hover .tree-action, .page-row:hover .tree-action { display: inline-block; }
+.folder-row button:hover, .page-row button:hover { background: rgba(0,0,0,.055); }
+.sidebar-hint { padding: 18px 8px; color: #888; font-size: 12px; line-height: 1.5; }
+.canvas { position: relative; flex: 1; min-width: 0; }
+#app .excalidraw { width: 100%; height: 100%; }
+@media (max-width: 640px) {
+  .sidebar { width: 230px; }
+  .topbar { gap: 8px; padding: 0 8px; }
+  .actions button { padding: 6px 7px; }
+  .brand { font-size: 14px; }
+}

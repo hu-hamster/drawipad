@@ -4,6 +4,7 @@ import SwiftUI
 /// iPad 端总状态：连接 + 项目树缓存 + Excalidraw 场景同步。
 /// 全部在主线程。
 final class PadModel: ObservableObject {
+    private static let preferredServerNameKey = "DrawPadPreferredServerName"
     @Published var phase: DrawPadClient.Phase = .idle
     @Published var discovered: [MacBrowser.Item] = []
     @Published var snapshot = LibrarySnapshot()
@@ -35,12 +36,16 @@ final class PadModel: ObservableObject {
     private var pendingViewportZoom: (zoom: Double, cx: Double, cy: Double, vw: Double, vh: Double)?
     private var viewportApplyWork: DispatchWorkItem?
     private var toastWork: DispatchWorkItem?
+    /// 每次应用生命周期只自动尝试一次，避免用户主动断开后又被立即拉回连接。
+    private var didTryAutomaticConnection = false
 
     init() {
         browser.onUpdate = { [weak self] items in
             guard let self else { return }
             self.discovered = items
             print("[DrawPad] 发现 Mac 数量: \(items.count) \(items.map(\.name))")
+            self.reconnectToRediscoveredServiceIfNeeded(items)
+            self.connectAutomaticallyIfPossible(items)
         }
         client.onPhase = { [weak self] phase in
             guard let self else { return }
@@ -159,7 +164,39 @@ final class PadModel: ObservableObject {
     // MARK: - 连接
 
     func connect(_ item: MacBrowser.Item) {
+        UserDefaults.standard.set(item.name, forKey: Self.preferredServerNameKey)
+        didTryAutomaticConnection = true
         client.connect(to: item.endpoint)
+    }
+
+    private func connectAutomaticallyIfPossible(_ items: [MacBrowser.Item]) {
+        guard !didTryAutomaticConnection,
+              phase == .idle,
+              !items.isEmpty
+        else { return }
+
+        let preferredName = UserDefaults.standard.string(forKey: Self.preferredServerNameKey)
+        let target = preferredName.flatMap { name in
+            items.first { $0.name == name }
+        } ?? items.first { $0.name == "DrawPad Web" }
+          ?? (items.count == 1 ? items[0] : nil)
+
+        guard let target else { return }
+        didTryAutomaticConnection = true
+        print("[DrawPad] 自动连接: \(target.name)")
+        connect(target)
+    }
+
+    /// 服务重启后 Bonjour 端口会变化；断线重连时采用同名服务的新 endpoint，
+    /// 不再无限重试已经失效的旧端口。
+    private func reconnectToRediscoveredServiceIfNeeded(_ items: [MacBrowser.Item]) {
+        guard case .reconnecting = phase,
+              let preferredName = UserDefaults.standard.string(forKey: Self.preferredServerNameKey),
+              let target = items.first(where: { $0.name == preferredName })
+        else { return }
+
+        print("[DrawPad] 服务已重新发现，切换到新端点: \(target.name)")
+        client.connect(to: target.endpoint)
     }
 
     func disconnect() {
@@ -311,12 +348,16 @@ final class PadModel: ObservableObject {
     /// 本地场景变化 → 节流推送 Mac（固定节奏 ~80ms，不因连续绘制而推迟）。
     func handleLocalSceneChange(_ json: String) {
         guard case .connected = phase,
-              sceneReadyForEditing,
               let pageID = currentPageID
         else { return }
-        // 初始化期画布会多次自报空场景，直接忽略，防止清空对端内容
-        if json == "[]" {
+        // 初始化期画布会多次自报空场景，空内容仍需拦截，避免覆盖远端。
+        // 但只要用户已经画出了非空内容，就不能因为初始场景确认回调缺失而丢弃更新。
+        if !sceneReadyForEditing && json == "[]" {
             return
+        }
+        if !sceneReadyForEditing {
+            sceneReadyForEditing = true
+            print("[DrawPad] 检测到本地非空绘制，解除场景回传保护")
         }
         latestSceneJSON = json
         guard scenePushWork == nil else { return } // 已排定节奏，到点发最新值

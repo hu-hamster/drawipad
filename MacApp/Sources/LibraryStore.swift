@@ -4,7 +4,7 @@ import Foundation
 /// 全部在主线程访问。
 final class LibraryStore: ObservableObject {
     struct LibraryData: Codable {
-        var version: Int = 2
+        var version: Int = 3
         var folders: [Folder] = []
         var pages: [PageMeta] = []
     }
@@ -36,6 +36,7 @@ final class LibraryStore: ObservableObject {
         if let data = try? Data(contentsOf: libraryURL),
            let decoded = try? JSONDecoder().decode(LibraryData.self, from: data) {
             library = decoded
+            library.version = 3
         } else {
             bootstrap()
         }
@@ -67,8 +68,27 @@ final class LibraryStore: ObservableObject {
 
     var folders: [Folder] { library.folders }
 
+    var rootFolders: [Folder] {
+        library.folders.filter { $0.parentID == nil }
+    }
+
     func folder(_ id: UUID) -> Folder? {
         library.folders.first { $0.id == id }
+    }
+
+    func childFolders(of parentID: UUID) -> [Folder] {
+        library.folders.filter { $0.parentID == parentID }
+    }
+
+    func containsFolder(_ descendantID: UUID?, within ancestorID: UUID) -> Bool {
+        guard var currentID = descendantID else { return false }
+        var visited = Set<UUID>()
+        while visited.insert(currentID).inserted {
+            if currentID == ancestorID { return true }
+            guard let parentID = folder(currentID)?.parentID else { return false }
+            currentID = parentID
+        }
+        return false
     }
 
     func folderID(containing pageID: UUID) -> UUID? {
@@ -125,14 +145,14 @@ final class LibraryStore: ObservableObject {
     // MARK: - 文件夹管理
 
     @discardableResult
-    func createFolder(name: String = "新项目") -> Folder {
+    func createFolder(name: String = "新目录", parentID: UUID? = nil) -> Folder {
         var finalName = name
         var index = 1
-        while library.folders.contains(where: { $0.name == finalName }) {
+        while library.folders.contains(where: { $0.parentID == parentID && $0.name == finalName }) {
             index += 1
             finalName = "\(name) \(index)"
         }
-        let folder = Folder(name: finalName)
+        let folder = Folder(name: finalName, parentID: parentID)
         library.folders.append(folder)
         persist()
         return folder
@@ -146,19 +166,37 @@ final class LibraryStore: ObservableObject {
     }
 
     func deleteFolder(_ id: UUID) {
-        guard let folder = folder(id) else { return }
-        for pageID in folder.pageIDs {
+        guard folder(id) != nil else { return }
+        var folderIDs: Set<UUID> = [id]
+        var changed = true
+        while changed {
+            changed = false
+            for candidate in library.folders where candidate.parentID.map(folderIDs.contains) == true {
+                if folderIDs.insert(candidate.id).inserted { changed = true }
+            }
+        }
+        let pageIDs = Set(
+            library.folders
+                .filter { folderIDs.contains($0.id) }
+                .flatMap(\.pageIDs)
+        )
+        for pageID in pageIDs {
             try? FileManager.default.removeItem(at: scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw"))
         }
-        library.folders.removeAll { $0.id == id }
-        library.pages.removeAll { folder.pageIDs.contains($0.id) }
+        library.folders.removeAll { folderIDs.contains($0.id) }
+        library.pages.removeAll { pageIDs.contains($0.id) }
         persist()
     }
 
     // MARK: - 文件管理
 
     @discardableResult
-    func createPage(folderID: UUID, afterPageID: UUID? = nil, name: String? = nil) -> PageMeta {
+    func createPage(
+        folderID: UUID,
+        afterPageID: UUID? = nil,
+        name: String? = nil,
+        initialSceneJSON: String = "[]"
+    ) -> PageMeta {
         let existingNames = Set(pages(in: folderID).map(\.name))
         var index = existingNames.count + 1
         let baseName = name ?? "画板"
@@ -168,7 +206,7 @@ final class LibraryStore: ObservableObject {
             finalName = "\(baseName) \(index)"
         }
         let page = PageMeta(name: finalName)
-        writeScene("[]", for: page.id)
+        writeScene(initialSceneJSON, for: page.id)
         library.pages.append(page)
         if let folderIndex = library.folders.firstIndex(where: { $0.id == folderID }) {
             if let after = afterPageID,

@@ -1,0 +1,21 @@
+.drawpad-sync-status {
+  cursor: default;
+}
+
+.drawpad-sync-modal {
+  width: 420px;
+}
+
+.drawpad-sync-modal .drawpad-sync-device {
+  margin: 0.75em 0 1em;
+  padding: 0.75em;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  font-weight: 600;
+}
+
+.drawpad-sync-modal .drawpad-sync-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5em;
+}
