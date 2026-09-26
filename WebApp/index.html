@@ -6,6 +6,10 @@
   <title>DrawPad Web</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
+  <!-- Keep Excalidraw font requests local in both the browser and WKWebView. -->
+  <script>
+    window.EXCALIDRAW_ASSET_PATH = new URL("vendor/", document.baseURI).toString();
+  </script>
   <script src="vendor/excalidraw.production.min.js"></script>
 </head>
 <body>
