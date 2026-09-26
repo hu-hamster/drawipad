@@ -34,7 +34,7 @@ final class CanvasPadWebView: WKWebView, PadBoardSurface {
         self.init(frame: .zero, configuration: configuration)
         CanvasPadProxy.shared.current = self
         scrollView.bounces = false
-        if let html = Bundle.main.url(forResource: "canvas", withExtension: "html", subdirectory: "SharedWeb") {
+        if let html = Bundle.main.url(forResource: "canvas-react", withExtension: "html", subdirectory: "SharedWeb") {
             loadFileURL(html, allowingReadAccessTo: html.deletingLastPathComponent())
         }
     }

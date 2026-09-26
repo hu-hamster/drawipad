@@ -15,6 +15,7 @@ DerivedData/
 ObsidianPlugin/node_modules/
 ObsidianPlugin/main.js
 WebBridge/node_modules/
+CanvasEditor/node_modules/
 
 # 生成产物
 build/

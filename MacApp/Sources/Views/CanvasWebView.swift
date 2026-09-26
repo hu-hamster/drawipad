@@ -28,7 +28,7 @@ final class CanvasBoardWebView: WKWebView, BoardSurface {
         configuration.userContentController = content
         self.init(frame: .zero, configuration: configuration)
         CanvasBoardProxy.shared.current = self
-        if let html = Bundle.main.url(forResource: "canvas", withExtension: "html", subdirectory: "SharedWeb") {
+        if let html = Bundle.main.url(forResource: "canvas-react", withExtension: "html", subdirectory: "SharedWeb") {
             loadFileURL(html, allowingReadAccessTo: html.deletingLastPathComponent())
         }
     }

@@ -88,6 +88,8 @@ npm start
 
 然后访问 `http://127.0.0.1:8787/`，在 iPad 的 DrawPad 连接列表中选择 **DrawPad Web**。网页侧支持多级目录树；右键目录可新建画板、Canvas、子目录或重命名/删除目录，右键画板可重命名/删除。打开的画板保留在顶部标签栏，关闭标签不会删除文件；已有的单级浏览器数据会自动迁移成根目录。Canvas 在浏览器本地存储中持久化；粘贴图片作为 DrawPad 扩展字段，Obsidian 会显示文字回退。
 
+Canvas 编辑器使用 React Flow 离线包，支持节点拖动、缩放、多选、四边连线、文字和连线标签编辑、颜色、分组、撤销重做以及视口同步。修改编辑器源码后，在 `CanvasEditor/` 执行 `npm install` 和 `npm run build`；依赖版本与参考包位置见 [CanvasEditor/README.md](CanvasEditor/README.md)。
+
 ## 调试
 
 - Mac app 启动参数 `--auto-accept-pairing`：自动接受配对（自动化联调）
