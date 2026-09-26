@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>DrawPad Canvas</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #f8f9fa; color: #1e1e1e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    #viewport { position: absolute; inset: 0; touch-action: none; background-image: radial-gradient(#d0d5dd 1.1px, transparent 1.1px); background-size: 22px 22px; }
+    #world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+    svg.edges { position: absolute; overflow: visible; pointer-events: none; }
+    svg.edges path.hit { pointer-events: stroke; stroke: transparent; stroke-width: 16; fill: none; }
+    .node { position: absolute; box-sizing: border-box; display: flex; align-items: center; justify-content: center; background: #fff; border: 2px solid #1e1e1e; box-shadow: 0 1px 0 rgba(30,30,30,.08); }
+    .node.selected { border-color: #6965db; box-shadow: 0 0 0 1px #6965db; }
+    .node.ellipse { border-radius: 999px; }
+    .node.diamond { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); border: 0; background: #fff; }
+    .node.diamond::before { content: ""; position: absolute; inset: 8px; background: inherit; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+    .node.group { background: rgba(105,101,219,.06); border-style: dashed; border-radius: 12px; z-index: 0; }
+    .node .content, .node textarea { width: 100%; height: 100%; box-sizing: border-box; padding: 12px; text-align: center; font-size: 16px; line-height: 1.35; white-space: pre-wrap; word-break: break-word; display: flex; align-items: center; justify-content: center; }
+    .node textarea { border: 0; resize: none; outline: none; background: transparent; font: inherit; text-align: center; }
+    .handle { position: absolute; width: 12px; height: 12px; margin: -6px; border-radius: 50%; background: #fff; border: 2px solid #6965db; display: none; z-index: 3; }
+    .node.selected .handle, .node:hover .handle { display: block; }
+    .handle.n { left: 50%; top: 0; } .handle.e { left: 100%; top: 50%; }
+    .handle.s { left: 50%; top: 100%; } .handle.w { left: 0; top: 50%; }
+    .resize { right: -5px; bottom: -5px; margin: 0; border-radius: 3px; cursor: nwse-resize; }
+    .edge-label { position: absolute; transform: translate(-50%, -50%); background: #f8f9fa; border-radius: 8px; padding: 2px 6px; font-size: 13px; pointer-events: auto; }
+    #dock { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 6; display: flex; flex-direction: column; gap: 4px; padding: 6px; background: #fff; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+    #dock button { width: 36px; height: 36px; border: 0; border-radius: 9px; background: transparent; font-size: 16px; }
+    #dock button.active, #dock button:hover { background: #ecebff; }
+    #props { position: absolute; left: 60px; top: 50%; transform: translateY(-50%); z-index: 6; display: flex; flex-direction: column; gap: 6px; }
+    #props button { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #ced4da; }
+    .flow { stroke-dasharray: 7 8; animation: flow 1s linear infinite; }
+    @keyframes flow { to { stroke-dashoffset: -30; } }
+  </style>
+</head>
+<body>
+  <div id="viewport"><div id="world"></div></div>
+  <div id="dock">
+    <button data-tool="select" class="active" title="选择">↖</button>
+    <button data-tool="rect" title="矩形">▢</button>
+    <button data-tool="ellipse" title="椭圆">◯</button>
+    <button data-tool="diamond" title="菱形">◇</button>
+    <button data-tool="text" title="文本">T</button>
+    <button data-tool="arrow" title="连线">↗</button>
+    <button data-tool="group" title="分组">▣</button>
+    <button id="flow" title="流动箭头">≈</button>
+    <button id="undo" title="撤销">↶</button>
+    <button id="redo" title="重做">↷</button>
+  </div>
+  <div id="props"></div>
+  <script>
+    (function () {
+      var PALETTE = {
+        "0": ["#ffffff", "#1e1e1e"],
+        "1": ["#ffc9c9", "#c92a2a"],
+        "2": ["#ffd8a8", "#d9480f"],
+        "3": ["#fff3bf", "#e67700"],
+        "4": ["#b2f2bb", "#2b8a3e"],
+        "5": ["#a5d8ff", "#1864ab"],
+        "6": ["#d0bfff", "#5f3dc4"]
+      };
+      var doc = { nodes: [], edges: [] };
+      var tool = "select";
+      var selected = null;
+      var selectedEdge = null;
+      var editingId = null;
+      var color = "5";
+      var flowOn = true;
+      var cam = { x: 40, y: 40, z: 1 };
+      var undoStack = [];
+      var redoStack = [];
+      var drag = null;
+      var rendering = false;
+      var world = document.getElementById("world");
+      var viewport = document.getElementById("viewport");
+
+      function post(name, data) {
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        if (window.parent !== window) window.parent.postMessage({ drawpadCanvas: true, name: name, data: data }, window.location.origin);
+        else if (handlers && handlers[name]) handlers[name].postMessage(data);
+      }
+      function uid() { return Math.random().toString(16).slice(2, 18); }
+      function nodeById(id) { return doc.nodes.find(function (node) { return node.id === id; }); }
+      function pushHistory() {
+        undoStack.push(JSON.stringify(doc));
+        if (undoStack.length > 80) undoStack.shift();
+        redoStack = [];
+      }
+      function sceneJSON() {
+        return JSON.stringify(doc, function (key, value) {
+          if (key === "color" && value === "0") return undefined;
+          if (["x", "y", "width", "height"].indexOf(key) >= 0 && typeof value === "number") return Math.round(value);
+          return value;
+        });
+      }
+      function emit() { post("sceneChange", sceneJSON()); }
+      function paint(node) { return PALETTE[node.color] || PALETTE["0"]; }
+      function shapeOf(node) { return node.shape || (node.type === "group" ? "group" : "rect"); }
+      function fieldText(node) {
+        if (node.type === "link") return node.url || "";
+        if (node.type === "group") return node.label || "";
+        return node.text || "";
+      }
+      function writeField(node, value) {
+        if (node.type === "group") node.label = value;
+        else if (node.type === "link") node.url = value || "https://";
+        else node.text = value;
+      }
+      function applyCamera() {
+        world.style.transform = "translate(" + cam.x + "px," + cam.y + "px) scale(" + cam.z + ")";
+      }
+      function sidePoint(node, side) {
+        var x = node.x + node.width / 2, y = node.y + node.height / 2;
+        if (side === "left") x = node.x;
+        if (side === "right") x = node.x + node.width;
+        if (side === "top") y = node.y;
+        if (side === "bottom") y = node.y + node.height;
+        return { x: x, y: y };
+      }
+      function nearestSide(node, point) {
+        return ["top", "right", "bottom", "left"].sort(function (a, b) {
+          var pa = sidePoint(node, a), pb = sidePoint(node, b);
+          return Math.hypot(pa.x - point.x, pa.y - point.y) - Math.hypot(pb.x - point.x, pb.y - point.y);
+        })[0];
+      }
+      function worldPoint(event) {
+        var rect = viewport.getBoundingClientRect();
+        return { x: (event.clientX - rect.left - cam.x) / cam.z, y: (event.clientY - rect.top - cam.y) / cam.z };
+      }
+      function curve(edge) {
+        var from = nodeById(edge.fromNode), to = nodeById(edge.toNode);
+        if (!from || !to) return "";
+        var a = sidePoint(from, edge.fromSide || "right");
+        var b = sidePoint(to, edge.toSide || "left");
+        var dx = Math.max(48, Math.abs(b.x - a.x) * 0.45);
+        var c1 = { x: a.x + (edge.fromSide === "left" ? -dx : dx), y: a.y };
+        var c2 = { x: b.x + (edge.toSide === "right" ? dx : -dx), y: b.y };
+        if (edge.fromSide === "top" || edge.fromSide === "bottom") c1 = { x: a.x, y: a.y + (edge.fromSide === "top" ? -dx : dx) };
+        if (edge.toSide === "top" || edge.toSide === "bottom") c2 = { x: b.x, y: b.y + (edge.toSide === "top" ? -dx : dx) };
+        return "M" + a.x + " " + a.y + " C" + c1.x + " " + c1.y + "," + c2.x + " " + c2.y + "," + b.x + " " + b.y;
+      }
+      function render() {
+        rendering = true;
+        world.innerHTML = "";
+        applyCamera();
+        var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.classList.add("edges");
+        svg.setAttribute("width", "1");
+        svg.setAttribute("height", "1");
+        var defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        defs.innerHTML = '<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1e1e1e"></path></marker>';
+        svg.appendChild(defs);
+        doc.edges.forEach(function (edge) {
+          var d = curve(edge);
+          if (!d) return;
+          var hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          hit.setAttribute("d", d);
+          hit.classList.add("hit");
+          hit.dataset.edge = edge.id;
+          svg.appendChild(hit);
+          var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", d);
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", (PALETTE[edge.color] || PALETTE["0"])[1]);
+          path.setAttribute("stroke-width", edge.id === selectedEdge ? "3.5" : "2.2");
+          if (edge.toEnd !== "none") path.setAttribute("marker-end", "url(#arrow)");
+          if (edge.fromEnd === "arrow") path.setAttribute("marker-start", "url(#arrow)");
+          if (edge.animated !== false && flowOn) path.classList.add("flow");
+          svg.appendChild(path);
+        });
+        world.appendChild(svg);
+        doc.nodes.forEach(function (node, index) {
+          var el = document.createElement("div");
+          var shape = shapeOf(node);
+          el.className = "node " + shape + (node.id === selected ? " selected" : "");
+          el.style.left = node.x + "px";
+          el.style.top = node.y + "px";
+          el.style.width = node.width + "px";
+          el.style.height = node.height + "px";
+          el.style.background = shape === "group" ? "" : paint(node)[0];
+          el.style.borderColor = node.id === selected ? "#6965db" : paint(node)[1];
+          el.style.zIndex = String(index + 1);
+          el.dataset.id = node.id;
+          if (node.image) {
+            var img = document.createElement("img");
+            img.src = node.image;
+            img.style.maxWidth = "80%";
+            img.style.maxHeight = "70%";
+            el.appendChild(img);
+          } else if (node.type === "file") {
+            var fileLabel = document.createElement("div");
+            fileLabel.className = "content";
+            fileLabel.textContent = node.file || "未指定文件";
+            el.appendChild(fileLabel);
+          }
+          if (node.id === editingId && shape !== "group") {
+            var box = document.createElement("textarea");
+            box.value = fieldText(node);
+            box.addEventListener("pointerdown", function (event) { event.stopPropagation(); });
+            box.addEventListener("input", function () { writeField(node, box.value); emit(); });
+            box.addEventListener("blur", function () {
+              writeField(node, box.value);
+              if (editingId === node.id) editingId = null;
+              emit();
+            });
+            el.appendChild(box);
+          } else if (node.type !== "file" && !node.image) {
+            var content = document.createElement("div");
+            content.className = "content";
+            content.textContent = fieldText(node);
+            el.appendChild(content);
+          }
+          ["n", "e", "s", "w"].forEach(function (side) {
+            var handle = document.createElement("div");
+            handle.className = "handle " + side;
+            handle.dataset.side = side;
+            el.appendChild(handle);
+          });
+          var resize = document.createElement("div");
+          resize.className = "handle resize";
+          resize.dataset.resize = "1";
+          el.appendChild(resize);
+          world.appendChild(el);
+        });
+        doc.edges.forEach(function (edge) {
+          if (!edge.label) return;
+          var from = nodeById(edge.fromNode), to = nodeById(edge.toNode);
+          if (!from || !to) return;
+          var a = sidePoint(from, edge.fromSide || "right");
+          var b = sidePoint(to, edge.toSide || "left");
+          var label = document.createElement("div");
+          label.className = "edge-label";
+          label.style.left = ((a.x + b.x) / 2) + "px";
+          label.style.top = ((a.y + b.y) / 2) + "px";
+          label.textContent = edge.label;
+          label.dataset.edge = edge.id;
+          world.appendChild(label);
+        });
+        rendering = false;
+        var box = world.querySelector("textarea");
+        if (box) requestAnimationFrame(function () { box.focus(); box.setSelectionRange(box.value.length, box.value.length); });
+      }
+      function addNode(shape, point, w, h) {
+        pushHistory();
+        var node = {
+          id: uid(), type: shape === "group" ? "group" : "text", shape: shape,
+          x: point.x, y: point.y, width: w || (shape === "group" ? 360 : shape === "diamond" ? 150 : 180),
+          height: h || (shape === "group" ? 220 : shape === "diamond" ? 150 : 96),
+          color: color, text: shape === "text" || shape === "rect" || shape === "ellipse" || shape === "diamond" ? "" : ""
+        };
+        if (shape === "group") node.label = "";
+        doc.nodes.push(node);
+        selected = node.id;
+        selectedEdge = null;
+        render();
+        emit();
+        if (shape !== "group") beginEdit(node.id, false);
+      }
+      function beginEdit(id, recordHistory) {
+        var node = nodeById(id);
+        if (!node || shapeOf(node) === "group" || node.type === "file") return;
+        if (recordHistory !== false) pushHistory();
+        editingId = id;
+        selected = id;
+        render();
+      }
+      function removeSelected() {
+        pushHistory();
+        if (selectedEdge) doc.edges = doc.edges.filter(function (edge) { return edge.id !== selectedEdge; });
+        if (selected) {
+          doc.nodes = doc.nodes.filter(function (node) { return node.id !== selected; });
+          doc.edges = doc.edges.filter(function (edge) { return edge.fromNode !== selected && edge.toNode !== selected; });
+        }
+        selected = null;
+        selectedEdge = null;
+        editingId = null;
+        render();
+        emit();
+      }
+      document.getElementById("dock").addEventListener("click", function (event) {
+        var button = event.target.closest("button");
+        if (!button) return;
+        if (button.dataset.tool) {
+          tool = button.dataset.tool;
+          document.querySelectorAll("#dock button").forEach(function (item) { item.classList.toggle("active", item === button); });
+        }
+        if (button.id === "flow") { flowOn = !flowOn; button.classList.toggle("active", flowOn); render(); }
+        if (button.id === "undo" && undoStack.length) { redoStack.push(JSON.stringify(doc)); doc = JSON.parse(undoStack.pop()); render(); emit(); }
+        if (button.id === "redo" && redoStack.length) { undoStack.push(JSON.stringify(doc)); doc = JSON.parse(redoStack.pop()); render(); emit(); }
+      });
+      var props = document.getElementById("props");
+      Object.keys(PALETTE).forEach(function (key) {
+        var button = document.createElement("button");
+        button.style.background = PALETTE[key][0];
+        button.onclick = function () {
+          color = key;
+          if (!selected && !selectedEdge) return;
+          pushHistory();
+          var node = nodeById(selected);
+          if (node) node.color = key;
+          var edge = doc.edges.find(function (item) { return item.id === selectedEdge; });
+          if (edge) edge.color = key;
+          render();
+          emit();
+        };
+        props.appendChild(button);
+      });
+      viewport.addEventListener("pointerdown", function (event) {
+        if (event.target.closest("#dock") || event.target.closest("#props") || event.target.closest("textarea")) return;
+        var handle = event.target.closest(".handle");
+        var nodeEl = event.target.closest(".node");
+        var edgeEl = event.target.closest("[data-edge]");
+        var point = worldPoint(event);
+        if (handle && handle.dataset.side && nodeEl) {
+          drag = { kind: "connect", from: nodeEl.dataset.id, side: handle.dataset.side, pointerId: event.pointerId };
+          viewport.setPointerCapture(event.pointerId);
+          return;
+        }
+        if (handle && handle.dataset.resize && nodeEl) {
+          var resizing = nodeById(nodeEl.dataset.id);
+          drag = { kind: "resize", id: resizing.id, x: point.x, y: point.y, w: resizing.width, h: resizing.height, pointerId: event.pointerId };
+          pushHistory();
+          viewport.setPointerCapture(event.pointerId);
+          return;
+        }
+        if (nodeEl && (tool === "select" || tool === "arrow")) {
+          var id = nodeEl.dataset.id;
+          var current = nodeById(id);
+          selectedEdge = null;
+          drag = { kind: tool === "arrow" ? "connect" : "pending", id: id, from: id, side: nearestSide(current, point), startX: event.clientX, startY: event.clientY, dx: point.x - current.x, dy: point.y - current.y, wasSelected: selected === id, pointerId: event.pointerId, group: shapeOf(current) === "group" ? contained(current) : [] };
+          selected = id;
+          if (tool === "arrow") viewport.setPointerCapture(event.pointerId);
+          return;
+        }
+        if (edgeEl) { selectedEdge = edgeEl.dataset.edge; selected = null; render(); return; }
+        if (tool !== "select" && tool !== "arrow") {
+          drag = { kind: "draw", shape: tool, x: point.x, y: point.y, pointerId: event.pointerId };
+          viewport.setPointerCapture(event.pointerId);
+          return;
+        }
+        selected = null;
+        selectedEdge = null;
+        editingId = null;
+        drag = { kind: "pan", x: event.clientX, y: event.clientY, cx: cam.x, cy: cam.y };
+        render();
+      });
+      function contained(group) {
+        return doc.nodes.filter(function (node) {
+          return node.id !== group.id && node.x >= group.x && node.y >= group.y && node.x + node.width <= group.x + group.width && node.y + node.height <= group.y + group.height;
+        }).map(function (node) { return node.id; });
+      }
+      viewport.addEventListener("pointermove", function (event) {
+        if (!drag) return;
+        var point = worldPoint(event);
+        if (drag.kind === "pending") {
+          if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
+          drag.kind = "move";
+          pushHistory();
+          viewport.setPointerCapture(drag.pointerId);
+        }
+        if (drag.kind === "pan") { cam.x = drag.cx + event.clientX - drag.x; cam.y = drag.cy + event.clientY - drag.y; applyCamera(); return; }
+        if (drag.kind === "move") {
+          var node = nodeById(drag.id);
+          var dx = point.x - drag.dx - node.x, dy = point.y - drag.dy - node.y;
+          node.x += dx; node.y += dy;
+          drag.group.forEach(function (id) { var child = nodeById(id); child.x += dx; child.y += dy; });
+          render(); emit();
+        }
+        if (drag.kind === "resize") {
+          var target = nodeById(drag.id);
+          target.width = Math.max(72, drag.w + point.x - drag.x);
+          target.height = Math.max(48, drag.h + point.y - drag.y);
+          render(); emit();
+        }
+      });
+      viewport.addEventListener("pointerup", function (event) {
+        if (!drag) return;
+        var point = worldPoint(event);
+        if (drag.kind === "draw") {
+          var w = Math.abs(point.x - drag.x), h = Math.abs(point.y - drag.y);
+          addNode(drag.shape, { x: Math.min(point.x, drag.x), y: Math.min(point.y, drag.y) }, w > 24 ? w : null, h > 24 ? h : null);
+        }
+        if (drag.kind === "connect") {
+          var hit = document.elementFromPoint(event.clientX, event.clientY);
+          var nodeEl = hit && hit.closest(".node");
+          if (nodeEl && nodeEl.dataset.id !== drag.from) {
+            pushHistory();
+            var target = nodeById(nodeEl.dataset.id);
+            doc.edges.push({ id: uid(), fromNode: drag.from, fromSide: drag.side, toNode: target.id, toSide: nearestSide(target, point), toEnd: "arrow", color: color, label: "", animated: true });
+            render(); emit();
+          }
+        }
+        if (drag.kind === "pending") {
+          render();
+          if (drag.wasSelected) beginEdit(drag.id);
+        }
+        if (drag.kind === "pan" || drag.kind === "move") publishViewport();
+        drag = null;
+      });
+      viewport.addEventListener("dblclick", function (event) {
+        var edgeEl = event.target.closest("[data-edge]");
+        if (edgeEl) {
+          var edge = doc.edges.find(function (item) { return item.id === edgeEl.dataset.edge; });
+          if (!edge) return;
+          selectedEdge = edge.id;
+          var input = document.createElement("input");
+          input.value = edge.label || "";
+          input.style.cssText = "position:absolute;left:" + event.clientX + "px;top:" + event.clientY + "px;z-index:8;font:16px -apple-system,sans-serif;padding:6px 8px;border:2px solid #6965db;border-radius:8px;";
+          document.body.appendChild(input);
+          input.focus();
+          input.onblur = function () { pushHistory(); edge.label = input.value; input.remove(); render(); emit(); };
+          input.onkeydown = function (keyEvent) { if (keyEvent.key === "Enter") input.blur(); };
+          return;
+        }
+        var nodeEl = event.target.closest(".node");
+        if (nodeEl) { beginEdit(nodeEl.dataset.id); return; }
+        if (event.target.closest("#dock")) return;
+        addNode("text", worldPoint(event));
+      });
+      window.addEventListener("keydown", function (event) {
+        var typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
+        var shortcuts = { v: "select", r: "rect", o: "ellipse", d: "diamond", t: "text", a: "arrow", g: "group" };
+        if (!typing && shortcuts[event.key.toLowerCase()] && !event.metaKey && !event.ctrlKey) {
+          tool = shortcuts[event.key.toLowerCase()];
+          document.querySelectorAll("#dock [data-tool]").forEach(function (button) { button.classList.toggle("active", button.dataset.tool === tool); });
+        }
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          document.getElementById(event.shiftKey ? "redo" : "undo").click();
+        }
+        if (!typing && (event.key === "Backspace" || event.key === "Delete")) removeSelected();
+        if (!typing && event.key === "Enter" && selected) beginEdit(selected);
+        if (event.key === "Escape" && typing) { event.preventDefault(); editingId = null; document.activeElement.blur(); render(); }
+      });
+      viewport.addEventListener("wheel", function (event) {
+        event.preventDefault();
+        if (event.ctrlKey || event.metaKey) {
+          var next = Math.min(4, Math.max(0.2, cam.z * (event.deltaY < 0 ? 1.08 : 0.92)));
+          var rect = viewport.getBoundingClientRect();
+          var px = event.clientX - rect.left, py = event.clientY - rect.top;
+          cam.x = px - (px - cam.x) * next / cam.z;
+          cam.y = py - (py - cam.y) * next / cam.z;
+          cam.z = next;
+        } else { cam.x -= event.deltaX; cam.y -= event.deltaY; }
+        applyCamera();
+        publishViewport();
+      }, { passive: false });
+      function publishViewport() {
+        var cx = (viewport.clientWidth / 2 - cam.x) / cam.z;
+        var cy = (viewport.clientHeight / 2 - cam.y) / cam.z;
+        post(Math.abs((window.__lastZ || cam.z) - cam.z) > 0.001 ? "viewportZoom" : "viewportPan", JSON.stringify({ cx: cx, cy: cy, z: cam.z, vw: viewport.clientWidth, vh: viewport.clientHeight }));
+        window.__lastZ = cam.z;
+      }
+      window.addEventListener("paste", function (event) {
+        var item = event.clipboardData && Array.from(event.clipboardData.items).find(function (entry) { return entry.type.indexOf("image/") === 0; });
+        if (!item || !selected) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          pushHistory();
+          var node = nodeById(selected);
+          node.image = reader.result;
+          node.type = "text";
+          node.text = "图片（仅 DrawPad 显示）";
+          render(); emit();
+        };
+        reader.readAsDataURL(item.getAsFile());
+      });
+      window.__applyScene = function (encoded) {
+        try {
+          var parsed = JSON.parse(encoded);
+          if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return "invalid";
+          doc = parsed;
+          undoStack = [];
+          redoStack = [];
+          editingId = null;
+          render();
+          return "ok";
+        } catch (error) { return "error:" + error; }
+      };
+      window.__getScene = sceneJSON;
+      window.addEventListener("message", function (event) {
+        if (event.origin !== window.location.origin || !event.data || !event.data.drawpadCanvasCommand) return;
+        var command = event.data;
+        if (command.name === "applyScene") window.__applyScene(command.data);
+        if (command.name === "applyViewportPan") window.__applyViewportPan(command.data.centerX, command.data.centerY);
+        if (command.name === "applyViewportZoom") {
+          var value = command.data;
+          window.__applyViewportZoom(value.zoom, value.centerX, value.centerY, value.viewWidth, value.viewHeight);
+        }
+        if (command.name === "requestViewport") post("viewportZoom", window.__getViewport());
+      });
+      window.__applyViewportPan = function (cx, cy) {
+        cam.x = viewport.clientWidth / 2 - cx * cam.z;
+        cam.y = viewport.clientHeight / 2 - cy * cam.z;
+        applyCamera();
+        return "ok";
+      };
+      window.__applyViewportZoom = function (z, cx, cy, peerW, peerH) {
+        var ratio = Math.min(viewport.clientWidth / (peerW || viewport.clientWidth), viewport.clientHeight / (peerH || viewport.clientHeight));
+        cam.z = Math.min(4, Math.max(0.2, z * ratio));
+        cam.x = viewport.clientWidth / 2 - cx * cam.z;
+        cam.y = viewport.clientHeight / 2 - cy * cam.z;
+        window.__lastZ = cam.z;
+        applyCamera();
+        return "ok";
+      };
+      window.__fitToContent = function () {
+        if (!doc.nodes.length) return "empty";
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        doc.nodes.forEach(function (node) {
+          minX = Math.min(minX, node.x); minY = Math.min(minY, node.y);
+          maxX = Math.max(maxX, node.x + node.width); maxY = Math.max(maxY, node.y + node.height);
+        });
+        cam.z = Math.min(2, Math.max(0.2, Math.min((viewport.clientWidth - 120) / Math.max(1, maxX - minX), (viewport.clientHeight - 120) / Math.max(1, maxY - minY))));
+        cam.x = viewport.clientWidth / 2 - ((minX + maxX) / 2) * cam.z;
+        cam.y = viewport.clientHeight / 2 - ((minY + maxY) / 2) * cam.z;
+        applyCamera(); publishViewport();
+        return "ok";
+      };
+      window.__localZoom = function (factor) {
+        cam.z = Math.min(4, Math.max(0.2, cam.z * factor));
+        applyCamera(); publishViewport();
+        return "ok";
+      };
+      window.__getViewport = function () {
+        return JSON.stringify({ cx: (viewport.clientWidth / 2 - cam.x) / cam.z, cy: (viewport.clientHeight / 2 - cam.y) / cam.z, z: cam.z, vw: viewport.clientWidth, vh: viewport.clientHeight });
+      };
+      document.getElementById("flow").classList.add("active");
+      render();
+      post("ready", { version: 1 });
+    })();
+  </script>
+</body>
+</html>

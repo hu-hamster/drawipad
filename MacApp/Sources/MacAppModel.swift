@@ -36,6 +36,7 @@ final class MacAppModel: ObservableObject {
 
     @Published var selectedFolderID: UUID?
     @Published var selectedPageID: UUID?
+    @Published private(set) var openPageIDs: [UUID] = []
     @Published var pairing: PairingPrompt?
     @Published var clientName: String?
     @Published var renameTarget: RenameTarget?
@@ -50,11 +51,12 @@ final class MacAppModel: ObservableObject {
     /// 调试参数：自动接受配对（本地自动化测试用，正常使用不传）。
     private let autoAcceptPairing = ProcessInfo.processInfo.arguments.contains("--auto-accept-pairing")
 
-    weak var webView: BoardWebView?
+    weak var webView: (any BoardSurface)?
+    private var webViewPageID: UUID?
 
     /// 场景推送节流。
     private var scenePushWork: DispatchWorkItem?
-    private var latestSceneJSON: String?
+    private var latestSceneUpdate: (pageID: UUID, json: String)?
     /// 视口同步。
     private var viewportPushWork: DispatchWorkItem?
     private var pendingPan: (cx: Double, cy: Double)?
@@ -70,6 +72,7 @@ final class MacAppModel: ObservableObject {
         if let folder {
             selectedFolderID = folder.id
             selectedPageID = folder.pageIDs.last
+            if let selectedPageID { openPageIDs = [selectedPageID] }
         }
         startServer()
     }
@@ -78,9 +81,20 @@ final class MacAppModel: ObservableObject {
         selectedPageID.flatMap { store.pageMeta($0) }
     }
 
+    var openPages: [PageMeta] {
+        openPageIDs.compactMap { store.pageMeta($0) }
+    }
+
     // MARK: - 画布（WebView）回调
 
-    func handleWebViewReady() {
+    func attachWebView(_ view: any BoardSurface) {
+        webView = view
+        webViewPageID = selectedPageID
+        webViewReady = false
+    }
+
+    func handleWebViewReady(_ view: any BoardSurface) {
+        guard webView === view, webViewPageID == selectedPageID else { return }
         webViewReady = true
         showCurrentSceneInWebView()
         if server.hasClient {
@@ -133,8 +147,9 @@ final class MacAppModel: ObservableObject {
     }
 
     /// 本端 Excalidraw 场景变化：存盘 + 节流推送给 iPad（~80ms 固定节奏）。
-    func handleLocalSceneChange(_ json: String) {
-        guard let id = selectedPageID else { return }
+    func handleLocalSceneChange(_ json: String, from view: any BoardSurface) {
+        guard webView === view, webViewReady,
+              let id = selectedPageID, webViewPageID == id else { return }
         // 初始化期画布会多次自报空场景，直接忽略，防止清空已有内容
         if json == "[]" {
             BoardWebViewMessageProxy.diag("忽略本端空场景广播（初始化噪声）")
@@ -142,14 +157,14 @@ final class MacAppModel: ObservableObject {
         }
         store.scheduleSaveScene(id, json: json)
         guard server.hasClient else { return }
-        latestSceneJSON = json
+        latestSceneUpdate = (id, json)
         guard scenePushWork == nil else { return } // 已排定节奏，到点发最新值
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.scenePushWork = nil
-            if let json = self.latestSceneJSON {
-                self.latestSceneJSON = nil
-                self.server.send(.sceneUpdate(fileID: id, elementsJSON: json))
+            if let update = self.latestSceneUpdate {
+                self.latestSceneUpdate = nil
+                self.server.send(.sceneUpdate(fileID: update.pageID, elementsJSON: update.json))
             }
         }
         scenePushWork = item
@@ -157,7 +172,9 @@ final class MacAppModel: ObservableObject {
     }
 
     private func showCurrentSceneInWebView() {
-        let scene = selectedPageID.flatMap { store.sceneJSON($0) } ?? "[]"
+        guard webViewReady, webViewPageID == selectedPageID else { return }
+        let canvas = currentMeta?.isCanvas == true
+        let scene = selectedPageID.flatMap { store.sceneJSON($0) } ?? (canvas ? PageMeta.emptyCanvas : "[]")
         webView?.applyScene(scene)
     }
 
@@ -165,12 +182,43 @@ final class MacAppModel: ObservableObject {
 
     /// remote = 变化来自 iPad（不再回推）；false = 本地 UI 选中（需推送给 iPad）。
     func selectPage(_ id: UUID?, remote: Bool = false) {
+        if let id, store.pageMeta(id) == nil { return }
+        if id != selectedPageID {
+            flushPendingSceneUpdate()
+            webView = nil
+            webViewPageID = nil
+            webViewReady = false
+        }
+        if let id, !openPageIDs.contains(id) { openPageIDs.append(id) }
         selectedPageID = id
         selectedFolderID = id.flatMap { store.folderID(containing: $0) } ?? selectedFolderID
-        showCurrentSceneInWebView()
         if !remote, let id, server.hasClient {
             pushFileOpen(id)
         }
+    }
+
+    func closePageTab(_ id: UUID) {
+        guard let index = openPageIDs.firstIndex(of: id) else { return }
+        openPageIDs.remove(at: index)
+        guard selectedPageID == id else { return }
+        let next = openPageIDs.indices.contains(index) ? openPageIDs[index] : openPageIDs.last
+        selectPage(next, remote: false)
+    }
+
+    private func flushPendingSceneUpdate() {
+        scenePushWork?.cancel()
+        scenePushWork = nil
+        if let update = latestSceneUpdate, server.hasClient {
+            server.send(.sceneUpdate(fileID: update.pageID, elementsJSON: update.json))
+        }
+        latestSceneUpdate = nil
+    }
+
+    private func discardPendingSceneUpdate(for pageIDs: Set<UUID>) {
+        guard let update = latestSceneUpdate, pageIDs.contains(update.pageID) else { return }
+        scenePushWork?.cancel()
+        scenePushWork = nil
+        latestSceneUpdate = nil
     }
 
     private func pushFileOpen(_ id: UUID) {
@@ -179,7 +227,7 @@ final class MacAppModel: ObservableObject {
             .fileOpened(
                 fileID: id,
                 folderID: folderID,
-                elementsJSON: store.sceneJSON(id) ?? "[]"
+                elementsJSON: store.sceneJSON(id) ?? (store.pageMeta(id)?.isCanvas == true ? PageMeta.emptyCanvas : "[]")
             )
         )
     }
@@ -314,42 +362,43 @@ final class MacAppModel: ObservableObject {
         case .openFile(let fileID):
             guard store.pageMeta(fileID) != nil else { break }
             selectPage(fileID, remote: true)
+            pushFileOpen(fileID)
 
         case .projectSelect(let folderID):
             guard let folder = store.folder(folderID) else { break }
             selectedFolderID = folderID
             if let last = folder.pageIDs.last {
                 selectPage(last, remote: true)
+                pushFileOpen(last)
             } else {
-                selectedPageID = nil
-                showCurrentSceneInWebView()
+                selectPage(nil, remote: true)
             }
 
         case .fileCreate(let folderID, let afterFileID):
-            guard store.folder(folderID) != nil else { break }
-            let meta = store.createPage(folderID: folderID, afterPageID: afterFileID)
-            pushLibrary()
-            selectPage(meta.id, remote: true)
-            pushFileOpen(meta.id)
+            createPageFromPeer(folderID: folderID, afterFileID: afterFileID, fileExtension: nil)
+
+        case .fileCreateCanvas(let folderID, let afterFileID):
+            createPageFromPeer(folderID: folderID, afterFileID: afterFileID, fileExtension: "canvas")
 
         case .fileDelete(let fileID):
             let wasCurrent = fileID == selectedPageID
+            discardPendingSceneUpdate(for: [fileID])
             let neighbor = store.deletePage(fileID)
+            openPageIDs.removeAll { $0 == fileID }
             pushLibrary()
             if wasCurrent {
-                if let neighbor {
-                    selectPage(neighbor, remote: true)
-                    pushFileOpen(neighbor)
+                if let next = openPageIDs.last ?? neighbor {
+                    selectPage(next, remote: true)
+                    pushFileOpen(next)
                 } else {
-                    selectedPageID = nil
-                    showCurrentSceneInWebView()
+                    selectPage(nil, remote: true)
                 }
             }
 
         case .sceneUpdate(let fileID, let elementsJSON):
             BoardWebViewMessageProxy.diag("iPad 场景推送: \(elementsJSON.count) 字节 (file \(fileID.uuidString.prefix(6)), 当前 \(selectedPageID?.uuidString.prefix(6) ?? "-"))")
             store.scheduleSaveScene(fileID, json: elementsJSON)
-            if fileID == selectedPageID {
+            if fileID == selectedPageID, webViewReady, webViewPageID == fileID {
                 webView?.applyScene(elementsJSON)
             }
 
@@ -383,18 +432,33 @@ final class MacAppModel: ObservableObject {
         guard !name.isEmpty else { return }
         let folder = store.createFolder(name: name, parentID: newFolderParentID)
         selectedFolderID = folder.id
-        selectedPageID = nil
+        selectPage(nil, remote: true)
         newFolderParentID = nil
-        showCurrentSceneInWebView()
         pushLibrary()
     }
 
-    func addPage(in folderID: UUID? = nil) {
+    func addPage(in folderID: UUID? = nil, fileExtension: String? = nil) {
         let targetFolder = folderID ?? selectedFolderID ?? store.folders.last?.id
         guard let targetFolder else { return }
-        let meta = store.createPage(folderID: targetFolder, afterPageID: selectedPageID)
+        let meta = store.createPage(
+            folderID: targetFolder,
+            afterPageID: selectedPageID,
+            fileExtension: fileExtension
+        )
         pushLibrary()
         selectPage(meta.id, remote: false)
+    }
+
+    private func createPageFromPeer(folderID: UUID, afterFileID: UUID?, fileExtension: String?) {
+        guard store.folder(folderID) != nil else { return }
+        let meta = store.createPage(
+            folderID: folderID,
+            afterPageID: afterFileID,
+            fileExtension: fileExtension
+        )
+        pushLibrary()
+        selectPage(meta.id, remote: true)
+        pushFileOpen(meta.id)
     }
 
     // MARK: - Excalidraw 导入
@@ -449,35 +513,99 @@ final class MacAppModel: ObservableObject {
         }
     }
 
+    func importCanvas() {
+        let panel = NSOpenPanel()
+        panel.title = "导入 Canvas"
+        panel.prompt = "导入"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "canvas") ?? .json, .json]
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.importCanvas(from: url)
+        }
+    }
+
+    func exportCanvas() {
+        guard currentMeta?.isCanvas == true, let id = selectedPageID else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出 Canvas"
+        panel.nameFieldStringValue = (currentMeta?.name ?? "Canvas") + ".canvas"
+        panel.allowedContentTypes = [UTType(filenameExtension: "canvas") ?? .json]
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let json = self?.store.sceneJSON(id) else { return }
+            try? Data(json.utf8).write(to: url, options: .atomic)
+        }
+    }
+
+    private func importCanvas(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let data = text.data(using: .utf8),
+                  var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (object["nodes"] == nil || object["nodes"] is [Any]),
+                  (object["edges"] == nil || object["edges"] is [Any]) else {
+                importError = "“\(url.lastPathComponent)”不是有效的 Canvas 文件。"
+                return
+            }
+            if object["nodes"] == nil { object["nodes"] = [Any]() }
+            if object["edges"] == nil { object["edges"] = [Any]() }
+            let normalized = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let folderID = selectedFolderID ?? store.folders.last?.id ?? store.createFolder(name: "导入").id
+            let page = store.createPage(
+                folderID: folderID,
+                afterPageID: selectedPageID,
+                name: url.deletingPathExtension().lastPathComponent,
+                fileExtension: "canvas",
+                initialSceneJSON: String(decoding: normalized, as: UTF8.self)
+            )
+            pushLibrary()
+            selectPage(page.id, remote: false)
+        } catch {
+            importError = "无法读取“\(url.lastPathComponent)”：\(error.localizedDescription)"
+        }
+    }
+
     func deletePageLocal(_ id: UUID) {
         let wasCurrent = id == selectedPageID
+        discardPendingSceneUpdate(for: [id])
         let neighbor = store.deletePage(id)
+        openPageIDs.removeAll { $0 == id }
         pushLibrary()
         if wasCurrent {
-            if let neighbor {
-                selectPage(neighbor, remote: false)
+            if let next = openPageIDs.last ?? neighbor {
+                selectPage(next, remote: false)
             } else {
-                selectedPageID = nil
-                showCurrentSceneInWebView()
+                selectPage(nil, remote: false)
             }
         }
     }
 
     func deleteFolderLocal(_ id: UUID) {
+        let removedPageIDs = Set(store.snapshot().folders
+            .filter { store.containsFolder($0.id, within: id) }
+            .flatMap(\.pageIDs))
+        discardPendingSceneUpdate(for: removedPageIDs)
         store.deleteFolder(id)
+        openPageIDs.removeAll { store.pageMeta($0) == nil }
         pushLibrary()
+        if let selectedPageID, store.pageMeta(selectedPageID) != nil { return }
+        if let next = openPageIDs.last {
+            selectPage(next, remote: false)
+            return
+        }
         if let folder = store.folders.last(where: { !$0.pageIDs.isEmpty }) ?? store.folders.last {
             selectedFolderID = folder.id
             if let pageID = folder.pageIDs.last {
                 selectPage(pageID, remote: false)
             } else {
-                selectedPageID = nil
-                showCurrentSceneInWebView()
+                selectPage(nil, remote: false)
             }
         } else {
             selectedFolderID = nil
-            selectedPageID = nil
-            showCurrentSceneInWebView()
+            selectPage(nil, remote: false)
         }
     }
 
@@ -528,8 +656,7 @@ final class MacAppModel: ObservableObject {
         if let last = folder.pageIDs.last {
             selectPage(last, remote: false)
         } else {
-            selectedPageID = nil
-            showCurrentSceneInWebView()
+            selectPage(nil, remote: false)
         }
     }
 

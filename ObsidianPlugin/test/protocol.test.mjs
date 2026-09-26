@@ -8,6 +8,8 @@ import {
 } from "../src/protocol.ts";
 import {
   emptyExcalidrawMarkdown,
+  isCanvasPath,
+  parseCanvas,
   parseExcalidraw,
   replaceElements,
 } from "../src/scene.ts";
@@ -21,7 +23,7 @@ test("protocol framing preserves fragmented and coalesced messages", () => {
   const frames = decoder.feed(Buffer.concat([first.subarray(3), second]));
   assert.equal(frames.length, 2);
   assert.deepEqual(decodeJSON(frames[0]), {
-    hello: { deviceName: "iPad", protocolVersion: 3 },
+    hello: { deviceName: "iPad", protocolVersion: 4 },
   });
   assert.deepEqual(decodeJSON(frames[1]), { requestProjectList: {} });
 });
@@ -55,4 +57,14 @@ test("compressed Excalidraw Markdown round-trips its elements", () => {
   const reparsed = parseExcalidraw(next);
   assert.ok(reparsed);
   assert.deepEqual(JSON.parse(reparsed.elementsJSON), [{ id: "shape-1", type: "rectangle" }]);
+});
+
+test("JSON Canvas accepts optional arrays and preserves extra fields", () => {
+  assert.equal(isCanvasPath("maps/idea.canvas"), true);
+  assert.deepEqual(parseCanvas('{"nodes":[{"id":"n","type":"text","text":"hi"}],"custom":1}'), {
+    nodes: [{ id: "n", type: "text", text: "hi" }],
+    edges: [],
+    custom: 1,
+  });
+  assert.equal(parseCanvas('{"nodes":"wrong"}'), null);
 });

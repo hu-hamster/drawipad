@@ -26,20 +26,89 @@ struct MainView: View {
         }
     }
 
-    @ViewBuilder
     private var detailView: some View {
-        if let meta = app.currentMeta {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
+            if let meta = app.currentMeta {
                 topBar
                     .frame(maxWidth: .infinity)
                     .background(.bar)
 
-                ExcalidrawWebView(model: app)
-                    .id(meta.id)
+                documentView(meta)
+                    .id(meta.id.uuidString + meta.documentExtension)
+            } else {
+                emptyView
             }
-            .navigationTitle(meta.name)
+        }
+        .navigationTitle("")
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                tabBar
+            }
+        }
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    ForEach(app.openPages) { page in
+                        let active = app.selectedPageID == page.id
+                        HStack(spacing: 4) {
+                            Button {
+                                app.selectPage(page.id)
+                            } label: {
+                                Label(page.name, systemImage: page.isCanvas ? "rectangle.3.group" : "scribble.variable")
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityIdentifier("drawpad-tab-\(page.id.uuidString)")
+                            .help(page.name)
+
+                            Button {
+                                app.closePageTab(page.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .frame(width: 20, height: 20)
+                                    .contentShape(Rectangle())
+                            }
+                            .help("关闭标签，不删除画板")
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 13, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        .padding(.leading, 11)
+                        .padding(.trailing, 5)
+                        .frame(width: 190, height: 31)
+                        .background(active ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+
+            Menu {
+                Button("新建 Excalidraw") { app.addPage() }
+                Button("新建 Canvas") { app.addPage(fileExtension: "canvas") }
+            } label: {
+                Image(systemName: "plus")
+                    .frame(width: 28, height: 28)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("新建画板标签")
+            .padding(.trailing, 8)
+        }
+        .frame(minWidth: 360, idealWidth: 760, maxWidth: .infinity)
+        .frame(height: 38)
+    }
+
+    @ViewBuilder
+    private func documentView(_ meta: PageMeta) -> some View {
+        if meta.isCanvas {
+            CanvasMacWebView(model: app)
         } else {
-            emptyView
+            ExcalidrawWebView(model: app)
         }
     }
 
@@ -55,7 +124,7 @@ struct MainView: View {
                     app.addFolder()
                 }
             } else {
-                Text("此目录还没有画板")
+                Text(app.openPages.isEmpty ? "选择左侧画板或新建" : "选择上方标签或左侧画板")
                     .foregroundStyle(.secondary)
                 Button {
                     let folderID = app.selectedFolderID ?? app.store.folders.last?.id
@@ -108,19 +177,28 @@ struct MainView: View {
 
             divider
 
-            Button {
-                app.addPage()
+            Menu {
+                Button("新建 Excalidraw") { app.addPage() }
+                Button("新建 Canvas") { app.addPage(fileExtension: "canvas") }
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
-            .help("新建画板")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("新建画板或 Canvas")
 
-            Button {
-                app.importExcalidraw()
+            Menu {
+                Button("导入 Excalidraw") { app.importExcalidraw() }
+                Button("导入 Canvas") { app.importCanvas() }
+                if app.currentMeta?.isCanvas == true {
+                    Button("导出 Canvas") { app.exportCanvas() }
+                }
             } label: {
                 Image(systemName: "square.and.arrow.down")
             }
-            .help("导入 Excalidraw（含 .excalidraw.md）")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("导入或导出")
 
             Button {
                 app.fitToContent()
@@ -331,7 +409,7 @@ private struct FolderNodeView: View {
                 )
             }
             ForEach(app.store.pages(in: folder.id)) { page in
-                Label(page.name, systemImage: "scribble.variable")
+                Label(page.name, systemImage: page.isCanvas ? "rectangle.3.group" : "scribble.variable")
                     .tag(page.id as UUID?)
                     .contextMenu {
                         Button("重命名画板…") {
@@ -349,6 +427,10 @@ private struct FolderNodeView: View {
                     Button("新建画板") {
                         expandedFolderIDs.insert(folder.id)
                         app.addPage(in: folder.id)
+                    }
+                    Button("新建 Canvas") {
+                        expandedFolderIDs.insert(folder.id)
+                        app.addPage(in: folder.id, fileExtension: "canvas")
                     }
                     Button("新建子目录…") {
                         expandedFolderIDs.insert(folder.id)
@@ -395,6 +477,10 @@ private struct FolderNodeView: View {
                 Button("新建画板") {
                     expandedFolderIDs.insert(folder.id)
                     app.addPage(in: folder.id)
+                }
+                Button("新建 Canvas") {
+                    expandedFolderIDs.insert(folder.id)
+                    app.addPage(in: folder.id, fileExtension: "canvas")
                 }
                 Button("新建子目录") {
                     expandedFolderIDs.insert(folder.id)

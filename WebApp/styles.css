@@ -7,28 +7,44 @@ button.danger { color: #a52828; }
 .status { color: #777; font-size: 13px; flex: 1; }
 .status.connected { color: #287b45; }
 .status.warn { color: #a56a14; }
-.actions { display: flex; gap: 8px; }
 .workspace { display: flex; width: 100%; height: calc(100% - 52px); }
 .sidebar { width: 300px; box-sizing: border-box; padding: 16px 10px; border-right: 1px solid #deded9; background: #fbfbf9; overflow: auto; }
-.sidebar-title { font-size: 14px; font-weight: 700; padding: 0 8px 12px; }
+.sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 12px; }
+.sidebar-title { font-size: 14px; font-weight: 700; }
+.icon-button { border: 0; background: transparent; font-size: 20px; padding: 3px 8px; }
 .tree { display: grid; gap: 3px; min-width: 240px; }
 .folder-node { min-width: 0; }
 .folder-row, .page-row { min-height: 32px; display: flex; align-items: center; gap: 2px; border-radius: 7px; }
 .folder-row.selected, .page-row.selected { background: #dcecff; }
 .folder-contents { margin-left: 17px; padding-left: 7px; border-left: 1px solid #d9d9d4; }
-.disclosure, .folder-name, .page-name, .tree-action { border-color: transparent; background: transparent; padding: 4px; }
+.disclosure, .folder-name, .page-name { border-color: transparent; background: transparent; padding: 4px; }
 .disclosure { width: 22px; flex: none; color: #666; }
 .folder-name, .page-name { min-width: 0; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-count { color: #888; font-size: 11px; min-width: 12px; text-align: center; }
-.tree-action { display: none; flex: none; color: #666; font-size: 11px; }
-.folder-row:hover .tree-action, .page-row:hover .tree-action { display: inline-block; }
 .folder-row button:hover, .page-row button:hover { background: rgba(0,0,0,.055); }
 .sidebar-hint { padding: 18px 8px; color: #888; font-size: 12px; line-height: 1.5; }
-.canvas { position: relative; flex: 1; min-width: 0; }
+.detail { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.tabbar { display: flex; flex: none; align-items: center; min-height: 42px; border-bottom: 1px solid #deded9; background: #f3f3f0; }
+.tabs { display: flex; gap: 3px; flex: 1; min-width: 0; overflow-x: auto; padding: 4px 7px; scrollbar-width: thin; }
+.tab { display: flex; align-items: center; min-width: 135px; max-width: 210px; flex: 0 1 190px; border-radius: 7px; background: #e7e7e3; }
+.tab.active { background: #dcecff; }
+.tab-title { display: flex; gap: 6px; min-width: 0; flex: 1; align-items: center; border: 0; background: transparent; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab-close { flex: none; border: 0; background: transparent; padding: 5px 8px; color: #666; }
+.tabbar > .icon-button { margin: 0 8px; }
+.canvas { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.canvas[hidden] { display: none; }
+#canvas-app { border: 0; width: 100%; }
 #app .excalidraw { width: 100%; height: 100%; }
+.empty-detail { display: grid; flex: 1; place-items: center; color: #888; font-size: 14px; }
+.empty-detail[hidden] { display: none; }
+.context-menu { position: fixed; z-index: 100; min-width: 190px; padding: 5px; border: 1px solid #d0d0ce; border-radius: 10px; background: #fff; box-shadow: 0 12px 32px #0003; }
+.context-menu[hidden] { display: none; }
+.context-menu button { display: block; width: 100%; border: 0; padding: 8px 10px; background: transparent; text-align: left; }
+.context-menu button:hover, .context-menu button:focus { background: #e8f1ff; }
+.context-menu button.danger { color: #a52828; }
+.context-menu hr { border: 0; border-top: 1px solid #ddd; margin: 5px; }
 @media (max-width: 640px) {
   .sidebar { width: 230px; }
   .topbar { gap: 8px; padding: 0 8px; }
-  .actions button { padding: 6px 7px; }
   .brand { font-size: 14px; }
 }

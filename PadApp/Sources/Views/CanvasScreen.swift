@@ -7,7 +7,7 @@ struct CanvasScreen: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            ExcalidrawPadWebView(model: model)
+            document
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
@@ -36,6 +36,17 @@ struct CanvasScreen: View {
                 model.deleteCurrentPage()
             }
             Button("取消", role: .cancel) {}
+        }
+    }
+
+    @ViewBuilder
+    private var document: some View {
+        if model.snapshot.pages.first(where: { $0.id == model.currentPageID })?.isCanvas == true {
+            CanvasPadScreen(model: model)
+                .id(model.currentPageID)
+        } else {
+            ExcalidrawPadWebView(model: model)
+                .id(model.currentPageID)
         }
     }
 
@@ -72,12 +83,13 @@ struct CanvasScreen: View {
 
             pageNav
 
-            Button {
-                model.newPage()
+            Menu {
+                Button("新建 Excalidraw", action: model.newPage)
+                Button("新建 Canvas", action: model.newCanvas)
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
-            .help("新建画板")
+            .help("新建画板或 Canvas")
 
             Button {
                 confirmDelete = true

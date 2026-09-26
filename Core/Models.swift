@@ -34,6 +34,8 @@ public struct PageMeta: Codable, Identifiable, Equatable, Hashable, Sendable {
     /// 两端渲染共用同一坐标系，保证笔迹坐标一致。
     public var width: Double
     public var height: Double
+    /// 文件后缀。缺省是 excalidraw，保证旧库和旧协议载荷仍按画板处理。
+    public var fileExtension: String?
 
     public init(
         id: UUID = UUID(),
@@ -41,7 +43,8 @@ public struct PageMeta: Codable, Identifiable, Equatable, Hashable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         width: Double = 1366,
-        height: Double = 1024
+        height: Double = 1024,
+        fileExtension: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -49,9 +52,18 @@ public struct PageMeta: Codable, Identifiable, Equatable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.width = width
         self.height = height
+        self.fileExtension = fileExtension
     }
 
     public var pageSize: CGSize { CGSize(width: width, height: height) }
+
+    public var documentExtension: String {
+        fileExtension == "canvas" ? "canvas" : "excalidraw"
+    }
+
+    public var isCanvas: Bool { documentExtension == "canvas" }
+
+    public static let emptyCanvas = "{\"nodes\":[],\"edges\":[]}"
 }
 
 /// 传输用的项目树快照（页面的显示顺序由 Folder.pageIDs 决定）。

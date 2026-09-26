@@ -1,4 +1,4 @@
-# DrawPad — Mac 全功能 Excalidraw + iPad 实时同步画板
+# DrawPad — Mac / iPad / 浏览器 / Obsidian 同步画板
 
 Mac 端内嵌**真正的 Excalidraw**（WKWebView + 官方引擎），具备 excalidraw.com 的全部能力：矩形/菱形/椭圆/箭头/线条/自由手绘/文字/图片、选择/移动/缩放/旋转、图层、样式面板（颜色/线宽/风格/透明度）、无限画布、撤销重做、菜单导出 PNG/SVG/JSON。
 
@@ -61,12 +61,12 @@ Xcode 打开 `DrawPad.xcodeproj` → scheme **DrawPadMac** → ⌘R（本地 ad-
 1. Mac 端打开 DrawPad（自动广播）
 2. iPad 打开 DrawPad → 点你的 Mac → Mac 上点"允许"
 3. 两端任意编辑，实时同步；iPad 顶栏可切目录/翻页/新建/删除；Excalidraw 自带工具栏画图
-4. Mac 侧边栏支持任意层级的目录树，可在任一目录中新建子目录和画板；删除目录前会提示并递归删除其中内容
+4. Mac 侧边栏支持任意层级的目录树，可在任一目录中新建子目录和画板；从侧边栏打开的画板会保留在顶部标签栏，标签可切换、关闭（关闭标签不删除文件）；删除目录前会提示并递归删除其中内容
 5. Excalidraw 菜单导出的文件自动存到“下载”。要导入 Obsidian 的 `.excalidraw.md`，点击 Mac 顶栏的“导入 Excalidraw”按钮；也支持原生 `.excalidraw` 与 JSON 场景
 
 ### Obsidian 插件（独立构建）
 
-`ObsidianPlugin/` 是单独的桌面插件工程，不会改动 Mac/iPad 应用。它直接复用 Vault 的原生目录树，把各层目录及其中的 `.excalidraw.md` / `.excalidraw` 文件通过同一套 Bonjour + TCP 协议提供给 DrawPad iPad 端，不维护额外的目录数据。
+`ObsidianPlugin/` 是单独的桌面插件工程，不会改动 Mac/iPad 应用。它直接复用 Vault 的原生目录树，把各层目录及其中的 `.excalidraw.md` / `.excalidraw` / `.canvas` 文件通过同一套 Bonjour + TCP 协议提供给 DrawPad iPad 端，不维护额外的目录数据。Canvas 编辑使用 Obsidian 原生画布；本插件同步节点和连线，但 Obsidian 原生 Canvas 的视口暂不参与同步。
 
 ```bash
 cd ObsidianPlugin
@@ -78,7 +78,7 @@ npm run build
 
 ### 浏览器版本
 
-`WebBridge/` + `WebApp/` 是独立的浏览器版本。它复用现有 Excalidraw 网页资产，通过本地 WebSocket/Bonjour Bridge 与 iPad 同步，不参与 Mac/iPad 的 Xcode 构建：
+`WebBridge/` + `WebApp/` 是独立的浏览器版本。它复用现有 Excalidraw 网页资产，并用独立 JSON Canvas 编辑器处理 `.canvas` 画板，通过本地 WebSocket/Bonjour Bridge 与 iPad 同步，不参与 Mac/iPad 的 Xcode 构建：
 
 ```bash
 cd WebBridge
@@ -86,10 +86,10 @@ npm install
 npm start
 ```
 
-然后访问 `http://127.0.0.1:8787/`，在 iPad 的 DrawPad 连接列表中选择 **DrawPad Web**。网页侧支持可展开的多级目录树、子目录创建/重命名/递归删除，以及目录内画板管理；已有的单级浏览器数据会自动迁移成根目录。
+然后访问 `http://127.0.0.1:8787/`，在 iPad 的 DrawPad 连接列表中选择 **DrawPad Web**。网页侧支持多级目录树；右键目录可新建画板、Canvas、子目录或重命名/删除目录，右键画板可重命名/删除。打开的画板保留在顶部标签栏，关闭标签不会删除文件；已有的单级浏览器数据会自动迁移成根目录。Canvas 在浏览器本地存储中持久化；粘贴图片作为 DrawPad 扩展字段，Obsidian 会显示文字回退。
 
 ## 调试
 
 - Mac app 启动参数 `--auto-accept-pairing`：自动接受配对（自动化联调）
 - 诊断日志：`~/Library/Containers/com.hujing.drawpad.mac/Data/tmp/drawpad_diag.log`（页面加载/挂载/桥错误）
-- 协议版本 v3（v1 PencilKit 版本见 git 历史 tag: 初始提交）
+- 协议版本 v4；Mac、iPad、Obsidian 插件和 Web Bridge 需使用相同版本（v1 PencilKit 版本见 git 历史 tag: 初始提交）

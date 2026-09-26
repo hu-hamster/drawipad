@@ -1,7 +1,7 @@
 import { App, TFile, normalizePath } from "obsidian";
 import { randomUUID } from "node:crypto";
 import { Folder, LibrarySnapshot, PageMeta } from "./protocol";
-import { emptyExcalidrawMarkdown, isExcalidrawPath, pageNameFromPath, parseExcalidraw, replaceElements } from "./scene";
+import { emptyExcalidrawMarkdown, isCanvasPath, isDrawingPath, pageNameFromPath, parseCanvas, parseExcalidraw, replaceElements } from "./scene";
 
 export interface DataStore {
   loadData(): Promise<unknown>;
@@ -51,7 +51,7 @@ export class VaultLibrary {
   async refresh(): Promise<LibrarySnapshot> {
     const files = this.app.vault
       .getFiles()
-      .filter((file) => isExcalidrawPath(file.path))
+      .filter((file) => isDrawingPath(file.path))
       .sort((a, b) => a.path.localeCompare(b.path));
     const grouped = new Map<string, TFile[]>();
     const folderPaths = new Set<string>([""]);
@@ -108,6 +108,7 @@ export class VaultLibrary {
           updatedAt: fileUpdated,
           width: 1366,
           height: 1024,
+          fileExtension: isCanvasPath(file.path) ? "canvas" : undefined,
         });
         this.pageFiles.set(idKey(pageID), file);
         this.pageFolders.set(idKey(pageID), folderID);
@@ -136,6 +137,11 @@ export class VaultLibrary {
     return this.pageFiles.get(idKey(pageID));
   }
 
+  isCanvasPage(pageID: string): boolean {
+    const file = this.getPageFile(pageID);
+    return !!file && isCanvasPath(file.path);
+  }
+
   getFolder(folderID: string): FolderInfo | undefined {
     return this.folderInfo.get(idKey(folderID));
   }
@@ -144,6 +150,11 @@ export class VaultLibrary {
     const file = this.pageFiles.get(idKey(pageID));
     if (!file) throw new Error("找不到画板文件");
     const text = await this.app.vault.read(file);
+    if (isCanvasPath(file.path)) {
+      const canvas = parseCanvas(text);
+      if (!canvas) throw new Error(`无法解析“${file.path}”中的 Canvas 场景`);
+      return JSON.stringify(canvas);
+    }
     const parsed = parseExcalidraw(text);
     if (!parsed) throw new Error(`无法解析“${file.path}”中的 Excalidraw 场景`);
     return parsed.elementsJSON;
@@ -153,26 +164,34 @@ export class VaultLibrary {
     const file = this.pageFiles.get(idKey(pageID));
     if (!file) throw new Error("找不到画板文件");
     const text = await this.app.vault.read(file);
+    if (isCanvasPath(file.path)) {
+      const canvas = parseCanvas(elementsJSON);
+      if (!canvas) throw new Error("Canvas 场景数据无效");
+      await this.app.vault.modify(file, JSON.stringify(canvas, null, 2) + "\n");
+      await this.refresh();
+      return;
+    }
     const parsed = parseExcalidraw(text);
     if (!parsed) throw new Error(`无法解析“${file.path}”中的 Excalidraw 场景`);
     await this.app.vault.modify(file, replaceElements(text, elementsJSON, parsed));
     await this.refresh();
   }
 
-  async createPage(folderID: string, afterPageID: string | null): Promise<PageMeta> {
+  async createPage(folderID: string, afterPageID: string | null, type: "excalidraw" | "canvas" = "excalidraw"): Promise<PageMeta> {
     const info = this.folderInfo.get(idKey(folderID));
     if (!info) throw new Error("找不到项目");
     const folderPrefix = info.path ? `${info.path}/` : "";
     const existing = new Set(info.folder.pageIDs.map((id) => this.snapshot.pages.find((page) => page.id === id)?.name));
-    let name = "画板 1";
+    let name = type === "canvas" ? "Canvas 1" : "画板 1";
     let index = 1;
-    while (existing.has(name)) name = `画板 ${++index}`;
-    let path = normalizePath(`${folderPrefix}${name}.excalidraw.md`);
+    while (existing.has(name)) name = `${type === "canvas" ? "Canvas" : "画板"} ${++index}`;
+    const suffix = type === "canvas" ? ".canvas" : ".excalidraw.md";
+    let path = normalizePath(`${folderPrefix}${name}${suffix}`);
     while (this.app.vault.getAbstractFileByPath(path)) {
-      name = `画板 ${++index}`;
-      path = normalizePath(`${folderPrefix}${name}.excalidraw.md`);
+      name = `${type === "canvas" ? "Canvas" : "画板"} ${++index}`;
+      path = normalizePath(`${folderPrefix}${name}${suffix}`);
     }
-    const file = await this.app.vault.create(path, emptyExcalidrawMarkdown());
+    const file = await this.app.vault.create(path, type === "canvas" ? '{"nodes":[],"edges":[]}\n' : emptyExcalidrawMarkdown());
     if (afterPageID) {
       // Filesystem order is not part of Obsidian's API; refresh still gives a
       // deterministic path order, while the requested page remains available.

@@ -390,17 +390,21 @@ struct ExcalidrawWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> BoardWebView {
         let view = BoardWebView()
-        view.onReady = { [weak model] in
-            model?.handleWebViewReady()
+        view.onReady = { [weak model, weak view] in
+            guard let view else { return }
+            model?.handleWebViewReady(view)
         }
-        view.onSceneChange = { [weak model] json in
-            model?.handleLocalSceneChange(json)
+        view.onSceneChange = { [weak model, weak view] json in
+            guard let view else { return }
+            model?.handleLocalSceneChange(json, from: view)
         }
-        view.onViewportPan = { [weak model] sx, sy in
-            model?.handleLocalViewportPan(sx, sy)
+        view.onViewportPan = { [weak model, weak view] sx, sy in
+            guard let model, let view, model.webView === view else { return }
+            model.handleLocalViewportPan(sx, sy)
         }
-        view.onViewportZoom = { [weak model] z, cx, cy, vw, vh in
-            model?.handleLocalViewportZoom(z, cx, cy, vw, vh)
+        view.onViewportZoom = { [weak model, weak view] z, cx, cy, vw, vh in
+            guard let model, let view, model.webView === view else { return }
+            model.handleLocalViewportZoom(z, cx, cy, vw, vh)
         }
         view.onBridgeError = { error in
             BoardWebViewMessageProxy.diag("bridge callback: \(error)")
@@ -409,7 +413,7 @@ struct ExcalidrawWebView: NSViewRepresentable {
             model?.importError = message
         }
         view.attachHandlers()
-        model.webView = view
+        model.attachWebView(view)
         context.coordinator.installed = true
         return view
     }

@@ -112,14 +112,27 @@ final class LibraryStore: ObservableObject {
     // MARK: - 场景数据
 
     func sceneJSON(_ pageID: UUID) -> String? {
-        let url = scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw")
+        if let pending = pendingSceneSaves[pageID] { return pending }
+        let url = sceneURL(pageID)
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
+    private func sceneURL(_ pageID: UUID) -> URL {
+        let ext = pageMeta(pageID)?.documentExtension ?? "excalidraw"
+        return scenesDir.appendingPathComponent(pageID.uuidString + ".\(ext)")
+    }
+
     private func writeScene(_ json: String, for pageID: UUID) {
-        let url = scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw")
-        try? Data(json.utf8).write(to: url, options: .atomic)
+        try? Data(json.utf8).write(to: sceneURL(pageID), options: .atomic)
+    }
+
+    private func removeSceneFiles(_ pageID: UUID) {
+        for ext in ["excalidraw", "canvas"] {
+            try? FileManager.default.removeItem(
+                at: scenesDir.appendingPathComponent(pageID.uuidString + ".\(ext)")
+            )
+        }
     }
 
     /// 防抖保存场景（150ms），高频编辑不落盘。
@@ -181,7 +194,8 @@ final class LibraryStore: ObservableObject {
                 .flatMap(\.pageIDs)
         )
         for pageID in pageIDs {
-            try? FileManager.default.removeItem(at: scenesDir.appendingPathComponent(pageID.uuidString + ".excalidraw"))
+            pendingSceneSaves.removeValue(forKey: pageID)
+            removeSceneFiles(pageID)
         }
         library.folders.removeAll { folderIDs.contains($0.id) }
         library.pages.removeAll { pageIDs.contains($0.id) }
@@ -195,19 +209,21 @@ final class LibraryStore: ObservableObject {
         folderID: UUID,
         afterPageID: UUID? = nil,
         name: String? = nil,
-        initialSceneJSON: String = "[]"
+        fileExtension: String? = nil,
+        initialSceneJSON: String? = nil
     ) -> PageMeta {
         let existingNames = Set(pages(in: folderID).map(\.name))
         var index = existingNames.count + 1
-        let baseName = name ?? "画板"
+        let isCanvas = fileExtension == "canvas"
+        let baseName = name ?? (isCanvas ? "Canvas" : "画板")
         var finalName = name ?? "\(baseName) 1"
         while existingNames.contains(finalName) {
             index += 1
             finalName = "\(baseName) \(index)"
         }
-        let page = PageMeta(name: finalName)
-        writeScene(initialSceneJSON, for: page.id)
+        let page = PageMeta(name: finalName, fileExtension: isCanvas ? "canvas" : nil)
         library.pages.append(page)
+        writeScene(initialSceneJSON ?? (isCanvas ? PageMeta.emptyCanvas : "[]"), for: page.id)
         if let folderIndex = library.folders.firstIndex(where: { $0.id == folderID }) {
             if let after = afterPageID,
                let afterIndex = library.folders[folderIndex].pageIDs.firstIndex(of: after) {
@@ -230,7 +246,8 @@ final class LibraryStore: ObservableObject {
         let index = ids.firstIndex(of: id) ?? 0
         library.folders[folderIndex].pageIDs.removeAll { $0 == id }
         library.pages.removeAll { $0.id == id }
-        try? FileManager.default.removeItem(at: scenesDir.appendingPathComponent(id.uuidString + ".excalidraw"))
+        pendingSceneSaves.removeValue(forKey: id)
+        removeSceneFiles(id)
         persist()
         let remaining = library.folders[folderIndex].pageIDs
         if index < remaining.count {

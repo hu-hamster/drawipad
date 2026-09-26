@@ -24,7 +24,7 @@ final class PadModel: ObservableObject {
     let client = DrawPadClient()
     let browser = MacBrowser()
 
-    weak var webView: PadBoardWebView?
+    weak var webView: (any PadBoardSurface)?
 
     /// 本地场景变化 → 推送 Mac 的节流。
     private var scenePushWork: DispatchWorkItem?
@@ -91,7 +91,7 @@ final class PadModel: ObservableObject {
         currentPageID = nil
     }
 
-    func attachWebView(_ view: PadBoardWebView) {
+    func attachWebView(_ view: any PadBoardSurface) {
         viewportApplyWork?.cancel()
         viewportApplyWork = nil
         webView = view
@@ -100,7 +100,7 @@ final class PadModel: ObservableObject {
         isApplyingPendingScene = false
     }
 
-    func handleWebViewReady(_ view: PadBoardWebView) {
+    func handleWebViewReady(_ view: any PadBoardSurface) {
         guard webView === view else { return }
         webViewReady = true
         applyPendingSceneIfReady()
@@ -327,6 +327,15 @@ final class PadModel: ObservableObject {
     func selectFolder(_ id: UUID) {
         guard id != currentFolderID else { return }
         client.send(.projectSelect(folderID: id))
+    }
+
+    func newCanvas() {
+        let folderID = currentFolderID ?? snapshot.folders.last?.id
+        guard let folderID else {
+            showToast("没有可用项目")
+            return
+        }
+        client.send(.fileCreateCanvas(folderID: folderID, afterFileID: currentPageID))
     }
 
     func newPage() {

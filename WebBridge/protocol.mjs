@@ -1,4 +1,4 @@
-export const DRAW_PAD_PROTOCOL_VERSION = 3;
+export const DRAW_PAD_PROTOCOL_VERSION = 4;
 export const MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
 export function frameJSON(value) {

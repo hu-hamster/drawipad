@@ -12,20 +12,27 @@
   <header class="topbar">
     <div class="brand">DrawPad Web</div>
     <div id="status" class="status">正在连接 Bridge…</div>
-    <div class="actions">
-      <button id="new-folder">新建目录</button>
-      <button id="new-page">新建画板</button>
-      <button id="delete-page" class="danger">删除画板</button>
-    </div>
   </header>
   <div class="workspace">
     <aside class="sidebar">
-      <div class="sidebar-title">目录树</div>
+      <div class="sidebar-header">
+        <div class="sidebar-title">目录</div>
+        <button id="new-folder" class="icon-button" title="新建根目录" aria-label="新建根目录">📁＋</button>
+      </div>
       <div id="tree" class="tree"></div>
-      <div class="sidebar-hint">画板保存在此浏览器的本地存储中。</div>
+      <div class="sidebar-hint">右键目录或画板可新建、重命名和删除。数据保存在此浏览器中。</div>
     </aside>
-    <main id="app" class="canvas"></main>
+    <section class="detail">
+      <div class="tabbar">
+        <div id="tabs" class="tabs" role="tablist" aria-label="打开的画板"></div>
+        <button id="new-tab" class="icon-button" title="新建画板或 Canvas" aria-label="新建画板或 Canvas">＋</button>
+      </div>
+      <main id="app" class="canvas"></main>
+      <iframe id="canvas-app" class="canvas" title="JSON Canvas" src="/canvas.html" hidden></iframe>
+      <div id="empty-detail" class="empty-detail" hidden>从左侧目录打开画板，或点击右上角 ＋ 新建。</div>
+    </section>
   </div>
+  <div id="context-menu" class="context-menu" role="menu" hidden></div>
   <script src="app.js"></script>
 </body>
 </html>

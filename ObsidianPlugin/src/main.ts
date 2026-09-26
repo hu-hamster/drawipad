@@ -10,7 +10,7 @@ import {
 import { VaultLibrary } from "./library";
 import { DrawPadServer, PairingRequest } from "./server";
 import { ClientMessage, DRAW_PAD_PROTOCOL_VERSION, LibrarySnapshot, ServerMessage } from "./protocol";
-import { isExcalidrawPath } from "./scene";
+import { isCanvasPath, isDrawingPath, parseCanvas } from "./scene";
 
 interface DrawPadSettings {
   startOnStartup: boolean;
@@ -45,6 +45,16 @@ interface ExcalidrawViewLike {
   contentEl?: HTMLElement;
   file?: TFile;
   forceSave?(silent?: boolean): void | Promise<void>;
+}
+
+interface CanvasViewLike {
+  getViewType?(): string;
+  file?: TFile;
+  canvas?: {
+    getData?(): unknown;
+    setData?(data: Record<string, unknown>): void | Promise<void>;
+    requestSave?(): void;
+  };
 }
 
 interface ViewportState {
@@ -122,7 +132,7 @@ export default class DrawPadSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", () => this.scheduleRefresh()));
     this.registerEvent(this.app.vault.on("rename", () => this.scheduleRefresh()));
     this.registerEvent(this.app.vault.on("modify", (file) => {
-      if (file instanceof TFile && isExcalidrawPath(file.path)) this.scheduleRefresh();
+      if (file instanceof TFile && isDrawingPath(file.path)) this.scheduleRefresh();
     }));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
       this.handleActivePageChanged();
@@ -222,6 +232,11 @@ export default class DrawPadSyncPlugin extends Plugin {
         await this.sendLibrary();
         await this.library.openPage(page.id);
         await this.sendFileOpened(page.id);
+      } else if ("fileCreateCanvas" in message) {
+        const page = await this.library.createPage(message.fileCreateCanvas.folderID, message.fileCreateCanvas.afterFileID, "canvas");
+        await this.sendLibrary();
+        await this.library.openPage(page.id);
+        await this.sendFileOpened(page.id);
       } else if ("fileDelete" in message) {
         const current = this.library.currentPageID();
         const deletedID = message.fileDelete.fileID;
@@ -255,6 +270,20 @@ export default class DrawPadSyncPlugin extends Plugin {
         };
         this.applyPendingViewport();
       } else if ("sceneUpdate" in message) {
+        if (this.library.isCanvasPage(message.sceneUpdate.fileID)) {
+          const canvas = parseCanvas(message.sceneUpdate.elementsJSON);
+          if (!canvas) throw new Error("Canvas 场景数据无效");
+          const pageKey = message.sceneUpdate.fileID.toLowerCase();
+          this.lastSceneJSONByPage.set(pageKey, JSON.stringify(canvas));
+          const view = this.activeCanvasView();
+          if (sameID(this.library.currentPageID(), message.sceneUpdate.fileID) && view?.canvas?.setData) {
+            await view.canvas.setData(canvas);
+            view.canvas.requestSave?.();
+          } else {
+            await this.library.updateScene(message.sceneUpdate.fileID, JSON.stringify(canvas));
+          }
+          return;
+        }
         const appliedLive = this.applyRemoteScene(
           message.sceneUpdate.fileID,
           message.sceneUpdate.elementsJSON,
@@ -297,7 +326,10 @@ export default class DrawPadSyncPlugin extends Plugin {
       (folder) => folder.pageIDs.some((candidate) => sameID(candidate, pageID)),
     )?.id;
     if (!folderID) return;
-    const elementsJSON = await this.library.readScene(pageID);
+    const canvasData = this.library.isCanvasPage(pageID) ? this.activeCanvasView()?.canvas?.getData?.() : null;
+    const elementsJSON = canvasData && typeof canvasData === "object"
+      ? JSON.stringify(canvasData)
+      : await this.library.readScene(pageID);
     if (generation !== this.fileOpenGeneration) return;
     this.lastSceneJSONByPage.set(pageID.toLowerCase(), elementsJSON);
     this.server.send({ fileOpened: { fileID: pageID, folderID, elementsJSON } });
@@ -324,6 +356,11 @@ export default class DrawPadSyncPlugin extends Plugin {
   private pollScene(): void {
     if (!this.server?.clientName) return;
     const pageID = this.library.currentPageID();
+    if (pageID && this.library.isCanvasPage(pageID)) {
+      const data = this.activeCanvasView()?.canvas?.getData?.();
+      if (data && typeof data === "object") this.pushCanvasIfChanged(pageID, data);
+      return;
+    }
     const view = this.activeExcalidrawView();
     const api = view?.excalidrawAPI;
     if (!pageID || !api) return;
@@ -357,6 +394,24 @@ export default class DrawPadSyncPlugin extends Plugin {
     if (this.lastSceneJSONByPage.get(key) === elementsJSON) return;
     this.lastSceneJSONByPage.set(key, elementsJSON);
     this.server.send({ sceneUpdate: { fileID: pageID, elementsJSON } });
+  }
+
+  private pushCanvasIfChanged(pageID: string, data: unknown): void {
+    const json = JSON.stringify(data);
+    const key = pageID.toLowerCase();
+    if (this.lastSceneJSONByPage.get(key) === json) return;
+    this.lastSceneJSONByPage.set(key, json);
+    this.server.send({ sceneUpdate: { fileID: pageID, elementsJSON: json } });
+  }
+
+  private activeCanvasView(): CanvasViewLike | null {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || !isCanvasPath(activeFile.path)) return null;
+    for (const leaf of this.app.workspace.getLeavesOfType("canvas")) {
+      const view = leaf.view as unknown as CanvasViewLike;
+      if (view.file?.path === activeFile.path) return view;
+    }
+    return null;
   }
 
   private applyRemoteScene(pageID: string, elementsJSON: string): boolean {
@@ -521,8 +576,10 @@ export default class DrawPadSyncPlugin extends Plugin {
     await this.library.refresh();
     if (this.server.clientName) {
       await this.sendLibrary();
-      // 文件修改只刷新目录元数据。实时场景由 Excalidraw API 的 onChange/
-      // 轮询通道发送；重复 fileOpened 会让 iPad 整页重载并造成明显延迟。
+      const pageID = this.library.currentPageID();
+      if (pageID && this.library.isCanvasPage(pageID) && !this.activeCanvasView()?.canvas?.getData) {
+        this.pushCanvasIfChanged(pageID, JSON.parse(await this.library.readScene(pageID)));
+      }
     }
   }
 
@@ -548,7 +605,7 @@ class PairingModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("drawpad-sync-modal");
     this.titleEl.setText("允许 DrawPad 连接？");
-    this.contentEl.createEl("p", { text: "以下设备请求连接当前 Vault，并将能够读取和修改 Excalidraw 画板：" });
+    this.contentEl.createEl("p", { text: "以下设备请求连接当前 Vault，并将能够读取和修改 Excalidraw 画板及 Canvas：" });
     this.contentEl.createDiv({ cls: "drawpad-sync-device", text: this.request.deviceName });
     const actions = this.contentEl.createDiv({ cls: "drawpad-sync-actions" });
     new Setting(actions)

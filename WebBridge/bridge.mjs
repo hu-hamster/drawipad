@@ -38,6 +38,9 @@ async function serveStatic(request, response) {
   if (pathname.startsWith("/vendor/")) {
     root = resolve(sharedRoot, "vendor");
     relativePath = pathname.slice("/vendor/".length);
+  } else if (pathname === "/canvas.html") {
+    root = sharedRoot;
+    relativePath = "canvas.html";
   }
   const filePath = safePath(root, relativePath);
   if (!filePath) {
@@ -94,8 +97,6 @@ class DrawPadWebBridge {
         resolveStart();
       });
     });
-    console.log(`DrawPad Web: http://127.0.0.1:${httpPort}/`);
-    console.log(`DrawPad Web Bonjour: ${serviceName} (_drawpad._tcp, TCP ${this.#tcpPort})`);
   }
 
   stop() {
@@ -138,7 +139,6 @@ class DrawPadWebBridge {
     // 避免多个标签页轮流下发不同 fileID，导致 iPad 笔迹被当前页丢弃。
     this.#browser = socket;
     this.#activeFileID = null;
-    console.log(`Browser connected (${this.#wss.clients.size} total); active browser updated`);
     this.#sendBrowserStates();
     socket.on("message", (raw) => {
       let message;
@@ -153,7 +153,6 @@ class DrawPadWebBridge {
           this.#sendToBrowser(socket, { type: "error", message: "此标签页不是当前活动的 DrawPad Web" });
           return;
         }
-        console.log(`Browser -> iPad: ${Object.keys(message.message)[0] || "unknown"}`);
         if (message.message.fileOpened?.fileID) {
           this.#activeFileID = message.message.fileOpened.fileID;
         }
@@ -167,7 +166,6 @@ class DrawPadWebBridge {
       );
       this.#browser = remaining.at(-1) || null;
       this.#activeFileID = null;
-      console.log(`Active browser closed; ${remaining.length} browser(s) remain`);
       this.#sendBrowserStates();
     });
   }
@@ -180,7 +178,6 @@ class DrawPadWebBridge {
       return;
     }
     this.#ipad = socket;
-    console.log(`iPad TCP connected: ${socket.remoteAddress || "unknown"}`);
     const decoder = new FrameDecoder();
     this.#sendBrowserStates();
     socket.on("data", (chunk) => {
@@ -197,23 +194,17 @@ class DrawPadWebBridge {
             return;
           }
           socket.write(frameJSON({ helloAccepted: { serverName: serviceName } }));
-          console.log(`iPad accepted: ${message.hello.deviceName}`);
           this.#sendToBrowser(this.#browser, {
             type: "ipadConnected",
             deviceName: message.hello.deviceName,
           });
         } else {
-          const kind = Object.keys(message)[0] || "unknown";
-          console.log(`iPad -> Browser: ${kind} (${payload.length} bytes)`);
           let routedMessage = message;
           // Swift 编码 UUID 时使用大写字母，浏览器 crypto.randomUUID() 使用小写。
           // 两者是同一 UUID 时只统一文本形式；真正不同的画板 ID 不做重定向。
           if (message.sceneUpdate && this.#activeFileID &&
               message.sceneUpdate.fileID !== this.#activeFileID &&
               message.sceneUpdate.fileID.toLowerCase() === this.#activeFileID.toLowerCase()) {
-            console.log(
-              `Remap sceneUpdate ${message.sceneUpdate.fileID} -> ${this.#activeFileID}`,
-            );
             routedMessage = {
               ...message,
               sceneUpdate: { ...message.sceneUpdate, fileID: this.#activeFileID },
@@ -229,7 +220,6 @@ class DrawPadWebBridge {
     socket.on("close", () => {
       if (this.#ipad !== socket) return;
       this.#ipad = null;
-      console.log("iPad TCP disconnected");
       this.#sendBrowserStates();
     });
     socket.on("error", () => socket.destroy());

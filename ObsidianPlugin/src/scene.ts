@@ -100,9 +100,31 @@ export function pageNameFromPath(path: string): string {
     .pop()!
     .replace(/\.excalidraw\.md$/i, "")
     .replace(/\.excalidraw$/i, "")
+    .replace(/\.canvas$/i, "")
     .replace(/\.md$/i, "");
 }
 
 export function isExcalidrawPath(path: string): boolean {
   return /\.excalidraw(?:\.md)?$/i.test(path);
+}
+
+export function isCanvasPath(path: string): boolean {
+  return /\.canvas$/i.test(path);
+}
+
+export function isDrawingPath(path: string): boolean {
+  return isExcalidrawPath(path) || isCanvasPath(path);
+}
+
+export function parseCanvas(text: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const document = value as Record<string, unknown>;
+    if (document.nodes !== undefined && !Array.isArray(document.nodes)) return null;
+    if (document.edges !== undefined && !Array.isArray(document.edges)) return null;
+    return { ...document, nodes: document.nodes ?? [], edges: document.edges ?? [] };
+  } catch {
+    return null;
+  }
 }
