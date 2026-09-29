@@ -153,12 +153,14 @@ enum AIElementShorthand {
         var element = baseElement(item, id: id, type: "text")
         let fontSize = Self.fontSize(from: item)
         element["text"] = text
+        element["rawText"] = text
         element["originalText"] = text
         element["fontSize"] = fontSize
         element["fontFamily"] = 1
+        element["lineHeight"] = 1.25
+        element["hasTextLink"] = false
         element["textAlign"] = item["align"] as? String ?? "left"
         element["verticalAlign"] = "top"
-        element["baseline"] = Double(fontSize)
         element["autoResize"] = true
         let charWidth = Double(fontSize) * 0.55
         let lines = text.components(separatedBy: "\n")
@@ -319,14 +321,15 @@ enum AIElementShorthand {
             "link": NSNull(),
             "locked": false,
             "text": text,
+            "rawText": text,
             "originalText": text,
             "fontSize": fontSize,
             "fontFamily": 1,
+            "lineHeight": 1.25,
+            "hasTextLink": false,
             "textAlign": "center",
             "verticalAlign": "middle",
             "containerId": containerID,
-            "originalContainerId": containerID,
-            "baseline": Double(fontSize),
             "autoResize": true,
         ]
     }
