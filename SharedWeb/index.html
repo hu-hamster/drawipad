@@ -64,6 +64,10 @@
     }
   </style>
   <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
+  <!-- Excalidraw loads its bundled fonts relative to this asset directory. -->
+  <script>
+    window.EXCALIDRAW_ASSET_PATH = new URL("vendor/", document.baseURI).toString();
+  </script>
   <script src="vendor/excalidraw.production.min.js" onerror="console.error('script load FAILED: excalidraw')"></script>
 </head>
 <body>
