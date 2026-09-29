@@ -137,12 +137,23 @@ enum AIElementShorthand {
         if let label = item["label"] as? String {
             let labelFont = item["fontSize"] == nil ? 16 : fontSize(from: item)
             element["boundElements"] = [["id": id + "_label", "type": "text", "isPrimary": true] as [String: Any]]
-            labelElement = makeBoundText(
-                id: id + "_label", containerID: id,
-                x: (element["x"] as? Double) ?? 0, y: (element["y"] as? Double) ?? 0,
-                text: label, fontSize: labelFont,
-                containerWidth: (element["width"] as? Double) ?? 140,
-                containerHeight: (element["height"] as? Double) ?? 70)
+            let boxW = (element["width"] as? Double) ?? 140
+            let boxH = (element["height"] as? Double) ?? 70
+            // 大容器（分组框）标签放左上角，避免垂直居中撞到内部元素
+            if boxH > 160 {
+                labelElement = makeBoundText(
+                    id: id + "_label", containerID: id,
+                    x: (element["x"] as? Double) ?? 0 + 16, y: (element["y"] as? Double) ?? 0 + 12,
+                    text: label, fontSize: labelFont,
+                    containerWidth: boxW - 32, containerHeight: Double(labelFont) + 8,
+                    topLeft: true)
+            } else {
+                labelElement = makeBoundText(
+                    id: id + "_label", containerID: id,
+                    x: (element["x"] as? Double) ?? 0, y: (element["y"] as? Double) ?? 0,
+                    text: label, fontSize: labelFont,
+                    containerWidth: boxW, containerHeight: boxH)
+            }
         }
         return (element, id, labelElement)
     }
@@ -283,7 +294,8 @@ enum AIElementShorthand {
     private static func makeBoundText(
         id: String, containerID: String, x: Double, y: Double,
         text: String, fontSize: Int,
-        containerWidth: Double = 120, containerHeight: Double = 56
+        containerWidth: Double = 120, containerHeight: Double = 56,
+        topLeft: Bool = false
     ) -> [String: Any] {
         // 自己测量并居中：Excalidraw 恢复场景时不会重排绑定文本，
         // 占位尺寸会导致文字漂在容器左上角。
@@ -292,8 +304,8 @@ enum AIElementShorthand {
         let lineHeight = Double(fontSize) * 1.28
         let textWidth = max(10, lineWidth + 4)
         let textHeight = max(10, lineHeight * Double(lines.count))
-        let centeredX = x + (containerWidth - textWidth) / 2
-        let centeredY = y + (containerHeight - textHeight) / 2
+        let centeredX = topLeft ? x : x + (containerWidth - textWidth) / 2
+        let centeredY = topLeft ? y : y + (containerHeight - textHeight) / 2
         return [
             "type": "text",
             "id": id,
@@ -327,8 +339,8 @@ enum AIElementShorthand {
             "fontFamily": 1,
             "lineHeight": 1.25,
             "hasTextLink": false,
-            "textAlign": "center",
-            "verticalAlign": "middle",
+            "textAlign": topLeft ? "left" : "center",
+            "verticalAlign": topLeft ? "top" : "middle",
             "containerId": containerID,
             "autoResize": true,
         ]
