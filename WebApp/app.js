@@ -9,7 +9,10 @@
     state.pages.map((page) => [page.id, sceneJSON(page)]),
   );
   const canvasFrame = document.getElementById("canvas-app");
+  const whiteboardFrame = document.getElementById("whiteboard-app");
+  const EMPTY_WHITEBOARD = '{"pages":[[]],"currentPage":0}';
   let canvasReady = false;
+  let whiteboardReady = false;
   let api = null;
   let socket = null;
   let suppressUntil = 0;
@@ -27,12 +30,17 @@
   }
 
   function isCanvas(page) { return page?.fileExtension === "canvas"; }
+  function isWhiteboard(page) { return page?.fileExtension === "whiteboard"; }
   function emptyCanvas() { return { nodes: [], edges: [] }; }
   function sceneJSON(page) {
+    if (isWhiteboard(page)) return page.whiteboard || EMPTY_WHITEBOARD;
     return JSON.stringify(isCanvas(page) ? (page.canvas || emptyCanvas()) : page.elements);
   }
   function sendCanvasCommand(name, data) {
     if (canvasReady) canvasFrame.contentWindow?.postMessage({ drawpadCanvasCommand: true, name, data }, location.origin);
+  }
+  function sendWhiteboardCommand(name, data) {
+    if (whiteboardReady) whiteboardFrame.contentWindow?.postMessage({ drawpadCanvasCommand: true, name, data }, location.origin);
   }
 
   function makeDefaultState() {
@@ -87,10 +95,11 @@
       name: page.name || "未命名画板",
       createdAt: page.createdAt || Date.now(),
       updatedAt: page.updatedAt || Date.now(),
-      fileExtension: page.fileExtension === "canvas" ? "canvas" : undefined,
+      fileExtension: page.fileExtension === "canvas" ? "canvas" : (page.fileExtension === "whiteboard" ? "whiteboard" : undefined),
       elements: Array.isArray(page.elements) ? page.elements : [],
       canvas: page.canvas && typeof page.canvas === "object" && Array.isArray(page.canvas.nodes) && Array.isArray(page.canvas.edges)
         ? page.canvas : emptyCanvas(),
+      whiteboard: typeof page.whiteboard === "string" ? page.whiteboard : EMPTY_WHITEBOARD,
     }));
     const hadTabState = Array.isArray(value.openPageIDs);
     value.openPageIDs = hadTabState
@@ -154,7 +163,7 @@
         updatedAt: swiftDate(page.updatedAt),
         width: 1366,
         height: 1024,
-        fileExtension: isCanvas(page) ? "canvas" : undefined,
+        fileExtension: isCanvas(page) ? "canvas" : (isWhiteboard(page) ? "whiteboard" : undefined),
       })),
     };
   }
@@ -211,6 +220,7 @@
     return [
       { label: "新建画板", action: () => createPage(folder.id) },
       { label: "新建 Canvas", action: () => createPage(folder.id, null, "canvas") },
+      { label: "新建白板", action: () => createPage(folder.id, null, "whiteboard") },
       { label: "新建子目录…", action: () => createFolder(folder.id) },
       null,
       { label: "重命名目录…", action: () => renameFolder(folder.id) },
@@ -219,7 +229,7 @@
   }
 
   function pageMenu(page) {
-    const kind = isCanvas(page) ? "Canvas" : "画板";
+    const kind = isCanvas(page) ? "Canvas" : (isWhiteboard(page) ? "白板" : "画板");
     return [
       { label: `打开${kind}`, action: () => openPage(page.id, true) },
       { label: `重命名${kind}…`, action: () => renamePage(page.id) },
@@ -288,7 +298,7 @@
         };
         const pageButton = document.createElement("button");
         pageButton.className = "page-name";
-        pageButton.textContent = `${isCanvas(page) ? "▣" : "〰"} ${page.name}`;
+        pageButton.textContent = `${isCanvas(page) ? "▣" : (isWhiteboard(page) ? "▤" : "〰")} ${page.name}`;
         pageButton.onclick = () => openPage(page.id, true);
         pageButton.ondblclick = () => renamePage(page.id);
         pageRow.append(pageButton);
@@ -317,7 +327,7 @@
       title.role = "tab";
       title.ariaSelected = String(sameID(page.id, state.currentPageID));
       title.title = page.name;
-      title.textContent = `${isCanvas(page) ? "▣" : "〰"} ${page.name}`;
+      title.textContent = `${isCanvas(page) ? "▣" : (isWhiteboard(page) ? "▤" : "〰")} ${page.name}`;
       title.onclick = () => openPage(page.id, true);
       const close = document.createElement("button");
       close.className = "tab-close";
@@ -362,13 +372,16 @@
 
   function applyScene(page = currentPage()) {
     const canvas = isCanvas(page);
-    document.getElementById("app").hidden = !page || canvas;
+    const whiteboard = isWhiteboard(page);
+    document.getElementById("app").hidden = !page || canvas || whiteboard;
     canvasFrame.hidden = !page || !canvas;
+    whiteboardFrame.hidden = !page || !whiteboard;
     document.getElementById("empty-detail").hidden = Boolean(page);
     if (!page) return;
     lastSceneJSONByPage.set(page.id, sceneJSON(page));
     suppressUntil = Date.now() + 300;
     if (canvas) sendCanvasCommand("applyScene", sceneJSON(page));
+    else if (whiteboard) sendWhiteboardCommand("applyScene", sceneJSON(page));
     else api?.updateScene({ elements: page.elements });
   }
 
@@ -421,6 +434,10 @@
       sendCanvasCommand("requestViewport", null);
       return;
     }
+    if (isWhiteboard(currentPage())) {
+      sendWhiteboardCommand("__getViewport", null);
+      return;
+    }
     const viewport = currentViewport();
     if (!viewport) return;
     lastSentViewport = viewport;
@@ -459,6 +476,10 @@
       sendCanvasCommand("applyViewportPan", { centerX, centerY });
       return;
     }
+    if (isWhiteboard(currentPage())) {
+      sendWhiteboardCommand("__applyViewportPan", { cx: centerX, cy: centerY });
+      return;
+    }
     if (!api) return;
     const viewport = currentViewport();
     if (!viewport) return;
@@ -474,6 +495,12 @@
   function applyViewportZoom(value) {
     if (isCanvas(currentPage())) {
       sendCanvasCommand("applyViewportZoom", value);
+      return;
+    }
+    if (isWhiteboard(currentPage())) {
+      sendWhiteboardCommand("__applyViewportZoom", {
+        z: value.zoom, cx: value.centerX, cy: value.centerY, vw: value.viewWidth, vh: value.viewHeight,
+      });
       return;
     }
     if (!api) return;
@@ -627,7 +654,7 @@
   function uniquePageName(folderID, type = "excalidraw") {
     const names = new Set(pagesInFolder(folderID).map((page) => page.name));
     let index = 1;
-    const prefix = type === "canvas" ? "Canvas" : "画板";
+    const prefix = type === "canvas" ? "Canvas" : (type === "whiteboard" ? "白板" : "画板");
     let name = `${prefix} ${index}`;
     while (names.has(name)) name = `${prefix} ${++index}`;
     return name;
@@ -642,8 +669,9 @@
     const now = Date.now();
     const page = {
       id: crypto.randomUUID(), folderID: folder.id, name: uniquePageName(folder.id, type),
-      createdAt: now, updatedAt: now, fileExtension: type === "canvas" ? "canvas" : undefined,
-      elements: [], canvas: emptyCanvas(),
+      createdAt: now, updatedAt: now,
+      fileExtension: type === "canvas" ? "canvas" : (type === "whiteboard" ? "whiteboard" : undefined),
+      elements: [], canvas: emptyCanvas(), whiteboard: EMPTY_WHITEBOARD,
     };
     const afterIndex = afterPageID
       ? state.pages.findIndex((item) => sameID(item.id, afterPageID))
@@ -702,7 +730,7 @@
   function deletePage(pageID = state.currentPageID, confirmDelete = true) {
     const page = state.pages.find((item) => sameID(item.id, pageID));
     if (!page) return;
-    if (confirmDelete && !window.confirm(`删除${isCanvas(page) ? "Canvas" : "画板"}“${page.name}”？`)) return;
+    if (confirmDelete && !window.confirm(`删除${isCanvas(page) ? "Canvas" : (isWhiteboard(page) ? "白板" : "画板")}“${page.name}”？`)) return;
     const wasCurrent = sameID(state.currentPageID, page.id);
     const siblings = pagesInFolder(page.folderID);
     const siblingIndex = siblings.findIndex((item) => item.id === page.id);
@@ -736,6 +764,8 @@
       createPage(message.fileCreate.folderID, message.fileCreate.afterFileID);
     } else if (message.fileCreateCanvas) {
       createPage(message.fileCreateCanvas.folderID, message.fileCreateCanvas.afterFileID, "canvas");
+    } else if (message.fileCreateWhiteboard) {
+      createPage(message.fileCreateWhiteboard.folderID, message.fileCreateWhiteboard.afterFileID, "whiteboard");
     } else if (message.fileDelete) {
       deletePage(message.fileDelete.fileID, false);
     } else if (message.viewportPanChanged) {
@@ -753,7 +783,10 @@
       }
       try {
         const incoming = JSON.parse(message.sceneUpdate.elementsJSON);
-        if (isCanvas(page)) {
+        if (isWhiteboard(page)) {
+          if (!incoming || !Array.isArray(incoming.pages) || !incoming.pages.length) return;
+          page.whiteboard = message.sceneUpdate.elementsJSON;
+        } else if (isCanvas(page)) {
           if (!incoming || !Array.isArray(incoming.nodes) || !Array.isArray(incoming.edges)) return;
           page.canvas = incoming;
         } else {
@@ -812,6 +845,7 @@
     showContextMenu(rect.left, rect.bottom, [
       { label: "新建画板", action: () => createPage() },
       { label: "新建 Canvas", action: () => createPage(state.currentFolderID, null, "canvas") },
+      { label: "新建白板", action: () => createPage(state.currentFolderID, null, "whiteboard") },
     ]);
   };
   document.querySelector(".sidebar").addEventListener("contextmenu", (event) => {
@@ -822,6 +856,7 @@
       ...(folderByID(state.currentFolderID) ? [
         { label: "新建画板", action: () => createPage() },
         { label: "新建 Canvas", action: () => createPage(state.currentFolderID, null, "canvas") },
+        { label: "新建白板", action: () => createPage(state.currentFolderID, null, "whiteboard") },
       ] : []),
     ]);
   });
@@ -834,17 +869,36 @@
   window.addEventListener("resize", () => { contextMenuEl.hidden = true; });
   document.querySelector(".sidebar").addEventListener("scroll", () => { contextMenuEl.hidden = true; }, true);
   window.addEventListener("message", (event) => {
-    if (event.source !== canvasFrame.contentWindow || event.origin !== location.origin) return;
+    if (event.origin !== location.origin) return;
+    const fromCanvas = event.source === canvasFrame.contentWindow;
+    const fromWhiteboard = event.source === whiteboardFrame.contentWindow;
+    if (!fromCanvas && !fromWhiteboard) return;
     const packet = event.data;
     if (!packet?.drawpadCanvas) return;
     if (packet.name === "ready") {
-      canvasReady = true;
-      if (isCanvas(currentPage())) {
+      if (fromCanvas) canvasReady = true;
+      if (fromWhiteboard) whiteboardReady = true;
+      const page = currentPage();
+      if ((fromCanvas && isCanvas(page)) || (fromWhiteboard && isWhiteboard(page))) {
         applyScene();
         sendCurrentViewport();
       }
     } else if (packet.name === "sceneChange") {
       const page = currentPage();
+      if (fromWhiteboard) {
+        if (!isWhiteboard(page)) return;
+        try {
+          const doc = JSON.parse(packet.data);
+          if (!doc || !Array.isArray(doc.pages) || !doc.pages.length) return;
+          if (packet.data === lastSceneJSONByPage.get(page.id)) return;
+          page.whiteboard = packet.data;
+          page.updatedAt = Date.now();
+          lastSceneJSONByPage.set(page.id, packet.data);
+          persist();
+          sendServerMessage({ sceneUpdate: { fileID: page.id, elementsJSON: packet.data } });
+        } catch (_) {}
+        return;
+      }
       if (!isCanvas(page)) return;
       try {
         const canvas = JSON.parse(packet.data);
@@ -857,7 +911,8 @@
         sendServerMessage({ sceneUpdate: { fileID: page.id, elementsJSON: packet.data } });
       } catch (_) {}
     } else if (packet.name === "viewportPan" || packet.name === "viewportZoom") {
-      if (!isCanvas(currentPage())) return;
+      const page = currentPage();
+      if (!isCanvas(page) && !isWhiteboard(page)) return;
       try {
         const value = JSON.parse(packet.data);
         const viewport = { centerX: value.cx, centerY: value.cy, zoom: value.z, viewWidth: value.vw, viewHeight: value.vh };
@@ -881,7 +936,7 @@
         sendCurrentViewport();
       },
       onChange: (elements, appState) => {
-        if (isCanvas(currentPage())) return;
+        if (isCanvas(currentPage()) || isWhiteboard(currentPage())) return;
         handleViewportChange(appState);
         if (Date.now() < suppressUntil) return;
         const page = currentPage();

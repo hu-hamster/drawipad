@@ -151,7 +151,7 @@ final class MacAppModel: ObservableObject {
         guard webView === view, webViewReady,
               let id = selectedPageID, webViewPageID == id else { return }
         // 初始化期画布会多次自报空场景，直接忽略，防止清空已有内容
-        if json == "[]" {
+        if json == "[]" || json == PageMeta.emptyWhiteboard {
             BoardWebViewMessageProxy.diag("忽略本端空场景广播（初始化噪声）")
             return
         }
@@ -173,9 +173,15 @@ final class MacAppModel: ObservableObject {
 
     private func showCurrentSceneInWebView() {
         guard webViewReady, webViewPageID == selectedPageID else { return }
-        let canvas = currentMeta?.isCanvas == true
-        let scene = selectedPageID.flatMap { store.sceneJSON($0) } ?? (canvas ? PageMeta.emptyCanvas : "[]")
+        let scene = selectedPageID.flatMap { store.sceneJSON($0) } ?? emptyScene(for: currentMeta)
         webView?.applyScene(scene)
+    }
+
+    /// 各画板类型的空文档（磁盘上还没有场景时使用）。
+    private func emptyScene(for meta: PageMeta?) -> String {
+        if meta?.isCanvas == true { return PageMeta.emptyCanvas }
+        if meta?.isWhiteboard == true { return PageMeta.emptyWhiteboard }
+        return "[]"
     }
 
     // MARK: - 选中文件
@@ -227,12 +233,12 @@ final class MacAppModel: ObservableObject {
             .fileOpened(
                 fileID: id,
                 folderID: folderID,
-                elementsJSON: store.sceneJSON(id) ?? (store.pageMeta(id)?.isCanvas == true ? PageMeta.emptyCanvas : "[]")
+                elementsJSON: store.sceneJSON(id) ?? emptyScene(for: store.pageMeta(id))
             )
         )
     }
 
-    private func pushLibrary() {
+    func pushLibrary() {
         server.send(.libraryChanged(snapshot: store.snapshot()))
     }
 
@@ -277,6 +283,7 @@ final class MacAppModel: ObservableObject {
         } catch {
             NSLog("DrawPad server start failed: \(error)")
         }
+        AIAPI.shared.start(model: self)
     }
 
     private func pushInitial() {
@@ -379,6 +386,9 @@ final class MacAppModel: ObservableObject {
 
         case .fileCreateCanvas(let folderID, let afterFileID):
             createPageFromPeer(folderID: folderID, afterFileID: afterFileID, fileExtension: "canvas")
+
+        case .fileCreateWhiteboard(let folderID, let afterFileID):
+            createPageFromPeer(folderID: folderID, afterFileID: afterFileID, fileExtension: "whiteboard")
 
         case .fileDelete(let fileID):
             let wasCurrent = fileID == selectedPageID
@@ -683,5 +693,58 @@ final class MacAppModel: ObservableObject {
         }
         renameTarget = nil
         pushLibrary()
+    }
+    // MARK: - AI API 支持（AIAPI 调用，全部主线程）
+
+    /// 整体替换画板场景：落盘 + 画布应用 + iPad 同步。
+    func apiSetScene(_ boardID: UUID, elementsJSON: String) {
+        guard (try? JSONSerialization.jsonObject(with: Data(elementsJSON.utf8))) is [Any] else { return }
+        store.forceWriteScene(elementsJSON, for: boardID)
+        if boardID == selectedPageID {
+            webView?.applyScene(elementsJSON)
+            if server.hasClient {
+                server.send(.sceneUpdate(fileID: boardID, elementsJSON: elementsJSON))
+            }
+        }
+        pushLibrary()
+    }
+
+    /// 追加元素（支持简写展开，from/to 可引用现有元素）。
+    func apiAppendElements(_ boardID: UUID, items: [[String: Any]]) -> (success: Bool, payload: String) {
+        let current = (store.sceneJSON(boardID) ?? "[]").data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
+        guard let expanded = AIElementShorthand.expand(items, existing: current) else {
+            return (false, "元素展开失败（检查 type 与必填字段）")
+        }
+        let merged = current + expanded.elements
+        guard let data = try? JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return (false, "序列化失败")
+        }
+        apiSetScene(boardID, elementsJSON: json)
+        return (true, json)
+    }
+
+    /// 按 id 删除元素（连带其绑定文本）。
+    func apiDeleteElements(_ boardID: UUID, ids: [String]) {
+        let current = (store.sceneJSON(boardID) ?? "[]").data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
+        let idSet = Set(ids)
+        let removedTextContainers = Set(
+            current.filter { idSet.contains($0["id"] as? String ?? "") }
+                .compactMap { $0["id"] as? String }
+        )
+        let filtered = current.filter { element in
+            let id = element["id"] as? String ?? ""
+            if idSet.contains(id) { return false }
+            // 绑定文本跟随容器删除
+            if let container = element["containerId"] as? String, idSet.contains(container) { return false }
+            _ = removedTextContainers
+            return true
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: filtered, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        apiSetScene(boardID, elementsJSON: json)
     }
 }

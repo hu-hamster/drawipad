@@ -38,7 +38,7 @@ async function serveStatic(request, response) {
   if (pathname.startsWith("/vendor/")) {
     root = resolve(sharedRoot, "vendor");
     relativePath = pathname.slice("/vendor/".length);
-  } else if (pathname === "/canvas.html" || pathname === "/canvas-react.html") {
+  } else if (pathname === "/canvas.html" || pathname === "/canvas-react.html" || pathname === "/whiteboard.html") {
     root = sharedRoot;
     relativePath = pathname.slice(1);
   }

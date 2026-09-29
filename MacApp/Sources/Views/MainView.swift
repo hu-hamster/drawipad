@@ -57,7 +57,7 @@ struct MainView: View {
                             Button {
                                 app.selectPage(page.id)
                             } label: {
-                                Label(page.name, systemImage: page.isCanvas ? "rectangle.3.group" : "scribble.variable")
+                                Label(page.name, systemImage: Self.pageIcon(page))
                                     .lineLimit(1)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
@@ -90,6 +90,7 @@ struct MainView: View {
             Menu {
                 Button("新建 Excalidraw") { app.addPage() }
                 Button("新建 Canvas") { app.addPage(fileExtension: "canvas") }
+                Button("新建白板") { app.addPage(fileExtension: "whiteboard") }
             } label: {
                 Image(systemName: "plus")
                     .frame(width: 28, height: 28)
@@ -107,9 +108,18 @@ struct MainView: View {
     private func documentView(_ meta: PageMeta) -> some View {
         if meta.isCanvas {
             CanvasMacWebView(model: app)
+        } else if meta.isWhiteboard {
+            WhiteboardMacWebView(model: app)
         } else {
             ExcalidrawWebView(model: app)
         }
+    }
+
+    /// 画板类型图标：Excalidraw / Canvas / 白板。
+    static func pageIcon(_ page: PageMeta) -> String {
+        if page.isCanvas { return "rectangle.3.group" }
+        if page.isWhiteboard { return "rectangle.on.rectangle" }
+        return "scribble.variable"
     }
 
     private var emptyView: some View {
@@ -180,12 +190,13 @@ struct MainView: View {
             Menu {
                 Button("新建 Excalidraw") { app.addPage() }
                 Button("新建 Canvas") { app.addPage(fileExtension: "canvas") }
+                Button("新建白板") { app.addPage(fileExtension: "whiteboard") }
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .help("新建画板或 Canvas")
+            .help("新建画板、Canvas 或白板")
 
             Menu {
                 Button("导入 Excalidraw") { app.importExcalidraw() }
@@ -409,7 +420,7 @@ private struct FolderNodeView: View {
                 )
             }
             ForEach(app.store.pages(in: folder.id)) { page in
-                Label(page.name, systemImage: page.isCanvas ? "rectangle.3.group" : "scribble.variable")
+                Label(page.name, systemImage: MainView.pageIcon(page))
                     .tag(page.id as UUID?)
                     .contextMenu {
                         Button("重命名画板…") {
@@ -431,6 +442,10 @@ private struct FolderNodeView: View {
                     Button("新建 Canvas") {
                         expandedFolderIDs.insert(folder.id)
                         app.addPage(in: folder.id, fileExtension: "canvas")
+                    }
+                    Button("新建白板") {
+                        expandedFolderIDs.insert(folder.id)
+                        app.addPage(in: folder.id, fileExtension: "whiteboard")
                     }
                     Button("新建子目录…") {
                         expandedFolderIDs.insert(folder.id)
@@ -481,6 +496,10 @@ private struct FolderNodeView: View {
                 Button("新建 Canvas") {
                     expandedFolderIDs.insert(folder.id)
                     app.addPage(in: folder.id, fileExtension: "canvas")
+                }
+                Button("新建白板") {
+                    expandedFolderIDs.insert(folder.id)
+                    app.addPage(in: folder.id, fileExtension: "whiteboard")
                 }
                 Button("新建子目录") {
                     expandedFolderIDs.insert(folder.id)

@@ -34,13 +34,10 @@ targets:
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.graphics-design
         NSLocalNetworkUsageDescription: DrawPad 通过本地网络与 iPad 建立绘制连接。
-    entitlements:
-      path: MacApp/DrawPadMac.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.network.server: true
-        com.apple.security.network.client: true
-        com.apple.security.files.user-selected.read-write: true
+    settings:
+      base:
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
 
   DrawPadPad:
     type: application

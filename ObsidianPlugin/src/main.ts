@@ -1,5 +1,6 @@
 import {
   App,
+  FileSystemAdapter,
   Modal,
   Notice,
   Plugin,
@@ -10,7 +11,8 @@ import {
 import { VaultLibrary } from "./library";
 import { DrawPadServer, PairingRequest } from "./server";
 import { ClientMessage, DRAW_PAD_PROTOCOL_VERSION, LibrarySnapshot, ServerMessage } from "./protocol";
-import { isCanvasPath, isDrawingPath, parseCanvas } from "./scene";
+import { isCanvasPath, isDrawingPath, isWhiteboardPath, parseCanvas, parseWhiteboard } from "./scene";
+import { WhiteboardView, WHITEBOARD_VIEW_TYPE } from "./whiteboardView";
 
 interface DrawPadSettings {
   startOnStartup: boolean;
@@ -95,6 +97,7 @@ export default class DrawPadSyncPlugin extends Plugin {
   private sceneSuppressUntil = 0;
   private announcedPageID: string | null = null;
   private fileOpenGeneration = 0;
+  private whiteboardSaves = new Map<TFile, { json: string; timer: number }>();
 
   async onload(): Promise<void> {
     const raw = await this.loadData();
@@ -127,6 +130,28 @@ export default class DrawPadSyncPlugin extends Plugin {
       callback: () => void this.refreshAndBroadcast(),
     });
     this.addSettingTab(new DrawPadSettingTab(this.app, this));
+
+    this.registerView(WHITEBOARD_VIEW_TYPE, (leaf) => new WhiteboardView(
+      leaf,
+      this.pluginResourcePath(),
+      {
+        onReady: (view) => void this.handleWhiteboardReady(view),
+        onSceneChange: (view, docJSON) => this.handleWhiteboardSceneChange(view, docJSON),
+        onViewport: (view, viewport, zoomChanged) => this.handleWhiteboardViewport(view, viewport, zoomChanged),
+      },
+    ));
+    this.registerExtensions(["whiteboard"], WHITEBOARD_VIEW_TYPE);
+    this.registerDomEvent(window, "message", (event: MessageEvent) => {
+      const packet = (event.data ?? {}) as { drawpadCanvas?: boolean; name?: string; data?: unknown };
+      if (packet.drawpadCanvas !== true || typeof packet.name !== "string") return;
+      for (const leaf of this.app.workspace.getLeavesOfType(WHITEBOARD_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (view instanceof WhiteboardView && view.matchesSource(event.source as Window | null)) {
+          view.handlePacket(packet.name, packet.data);
+          return;
+        }
+      }
+    });
 
     this.registerEvent(this.app.vault.on("create", () => this.scheduleRefresh()));
     this.registerEvent(this.app.vault.on("delete", () => this.scheduleRefresh()));
@@ -169,8 +194,16 @@ export default class DrawPadSyncPlugin extends Plugin {
 
   onunload(): void {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.flushWhiteboardSaves();
     this.detachSceneSubscription();
     this.server?.stop();
+  }
+
+  /** 插件目录的绝对路径（iframe 通过 app://local 加载 whiteboard.html）。 */
+  private pluginResourcePath(): string {
+    const adapter = this.app.vault.adapter as FileSystemAdapter;
+    const dir = this.manifest.dir || this.manifest.id;
+    return `${adapter.getBasePath()}/.obsidian/plugins/${dir}`;
   }
 
   async startServer(): Promise<void> {
@@ -237,6 +270,11 @@ export default class DrawPadSyncPlugin extends Plugin {
         await this.sendLibrary();
         await this.library.openPage(page.id);
         await this.sendFileOpened(page.id);
+      } else if ("fileCreateWhiteboard" in message) {
+        const page = await this.library.createPage(message.fileCreateWhiteboard.folderID, message.fileCreateWhiteboard.afterFileID, "whiteboard");
+        await this.sendLibrary();
+        await this.library.openPage(page.id);
+        await this.sendFileOpened(page.id);
       } else if ("fileDelete" in message) {
         const current = this.library.currentPageID();
         const deletedID = message.fileDelete.fileID;
@@ -270,6 +308,19 @@ export default class DrawPadSyncPlugin extends Plugin {
         };
         this.applyPendingViewport();
       } else if ("sceneUpdate" in message) {
+        if (this.library.isWhiteboardPage(message.sceneUpdate.fileID)) {
+          const whiteboard = parseWhiteboard(message.sceneUpdate.elementsJSON);
+          if (!whiteboard) throw new Error("白板文档数据无效");
+          const pageKey = message.sceneUpdate.fileID.toLowerCase();
+          this.lastSceneJSONByPage.set(pageKey, whiteboard);
+          const view = this.activeWhiteboardView();
+          if (sameID(this.library.currentPageID(), message.sceneUpdate.fileID) && view) {
+            view.applyScene(whiteboard);
+          } else {
+            await this.library.updateScene(message.sceneUpdate.fileID, whiteboard);
+          }
+          return;
+        }
         if (this.library.isCanvasPage(message.sceneUpdate.fileID)) {
           const canvas = parseCanvas(message.sceneUpdate.elementsJSON);
           if (!canvas) throw new Error("Canvas 场景数据无效");
@@ -361,6 +412,10 @@ export default class DrawPadSyncPlugin extends Plugin {
       if (data && typeof data === "object") this.pushCanvasIfChanged(pageID, data);
       return;
     }
+    if (pageID && this.library.isWhiteboardPage(pageID)) {
+      // 白板编辑器的变化由视图的 sceneChange 回调主动推送，无需轮询。
+      return;
+    }
     const view = this.activeExcalidrawView();
     const api = view?.excalidrawAPI;
     if (!pageID || !api) return;
@@ -412,6 +467,89 @@ export default class DrawPadSyncPlugin extends Plugin {
       if (view.file?.path === activeFile.path) return view;
     }
     return null;
+  }
+
+  private activeWhiteboardView(): WhiteboardView | null {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || !isWhiteboardPath(activeFile.path)) return null;
+    for (const leaf of this.app.workspace.getLeavesOfType(WHITEBOARD_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view instanceof WhiteboardView && view.file?.path === activeFile.path) return view;
+    }
+    return null;
+  }
+
+  // MARK: 白板视图（iframe 编辑器）事件
+
+  private async handleWhiteboardReady(view: WhiteboardView): Promise<void> {
+    const file = view.file;
+    if (!file) return;
+    const pageID = this.library.currentPageID();
+    if (!pageID || !this.library.isWhiteboardPage(pageID)) return;
+    const pageFile = this.library.getPageFile(pageID);
+    if (!pageFile || pageFile.path !== file.path) return;
+    const json = await this.library.readScene(pageID);
+    this.lastSceneJSONByPage.set(pageID.toLowerCase(), json);
+    view.applyScene(json);
+    if (this.server?.clientName) void this.sendFileOpened(pageID);
+  }
+
+  private handleWhiteboardSceneChange(view: WhiteboardView, docJSON: string): void {
+    const file = view.file;
+    if (!file) return;
+    if (parseWhiteboard(docJSON) === null) return;
+    this.scheduleWhiteboardSave(file, docJSON);
+    if (!this.server?.clientName) return;
+    const pageID = this.library.currentPageID();
+    if (!pageID || !this.library.isWhiteboardPage(pageID)) return;
+    const pageFile = this.library.getPageFile(pageID);
+    if (!pageFile || pageFile.path !== file.path) return;
+    const key = pageID.toLowerCase();
+    if (this.lastSceneJSONByPage.get(key) === docJSON) return;
+    this.lastSceneJSONByPage.set(key, docJSON);
+    this.server.send({ sceneUpdate: { fileID: pageID, elementsJSON: docJSON } });
+  }
+
+  private handleWhiteboardViewport(
+    view: WhiteboardView,
+    viewport: { cx: number; cy: number; z: number; vw: number; vh: number },
+    zoomChanged: boolean,
+  ): void {
+    if (!this.server?.clientName) return;
+    if (this.activeWhiteboardView() !== view) return;
+    if (Date.now() < this.viewportSuppressUntil) return;
+    const next: ViewportState = {
+      centerX: viewport.cx,
+      centerY: viewport.cy,
+      zoom: viewport.z,
+      viewWidth: viewport.vw,
+      viewHeight: viewport.vh,
+    };
+    if (zoomChanged) {
+      this.lastViewport = next;
+      this.server.send({ viewportZoomChanged: next });
+    } else {
+      if (this.lastViewport) this.lastViewport = { ...this.lastViewport, centerX: next.centerX, centerY: next.centerY };
+      this.server.send({ viewportPanChanged: { centerX: next.centerX, centerY: next.centerY } });
+    }
+  }
+
+  private scheduleWhiteboardSave(file: TFile, docJSON: string): void {
+    const pending = this.whiteboardSaves.get(file);
+    if (pending) window.clearTimeout(pending.timer);
+    const timer = window.setTimeout(() => {
+      this.whiteboardSaves.delete(file);
+      void this.app.vault.modify(file, docJSON);
+    }, 400);
+    this.whiteboardSaves.set(file, { json: docJSON, timer });
+  }
+
+  private flushWhiteboardSaves(): void {
+    for (const [file, pending] of this.whiteboardSaves) {
+      window.clearTimeout(pending.timer);
+      void this.app.vault.modify(file, pending.json);
+    }
+    this.whiteboardSaves.clear();
   }
 
   private applyRemoteScene(pageID: string, elementsJSON: string): boolean {
@@ -485,6 +623,12 @@ export default class DrawPadSyncPlugin extends Plugin {
 
   private pollViewport(): void {
     if (!this.server?.clientName) return;
+    const pageID = this.library.currentPageID();
+    if (pageID && this.library.isWhiteboardPage(pageID)) {
+      // 白板视口由视图回调推送；只处理待应用的对端视口。
+      if (this.pendingViewport) this.applyPendingViewport();
+      return;
+    }
     const view = this.activeExcalidrawView();
     if (!view) {
       this.lastViewport = null;
@@ -523,8 +667,36 @@ export default class DrawPadSyncPlugin extends Plugin {
 
   private applyPendingViewport(view = this.activeExcalidrawView()): void {
     const pending = this.pendingViewport;
+    if (!pending) return;
+    const whiteboardView = this.activeWhiteboardView();
+    if (whiteboardView) {
+      this.viewportSuppressUntil = Date.now() + 300;
+      if (pending.kind === "pan") {
+        const previous = this.lastViewport ?? { centerX: 0, centerY: 0, zoom: 1, viewWidth: 0, viewHeight: 0 };
+        this.lastViewport = { ...previous, centerX: pending.centerX, centerY: pending.centerY };
+        whiteboardView.applyViewportPan(pending.centerX, pending.centerY);
+      } else {
+        const remote = pending.viewport;
+        this.lastViewport = {
+          centerX: remote.centerX,
+          centerY: remote.centerY,
+          zoom: remote.zoom,
+          viewWidth: remote.viewWidth,
+          viewHeight: remote.viewHeight,
+        };
+        whiteboardView.applyViewportZoom({
+          cx: remote.centerX,
+          cy: remote.centerY,
+          z: remote.zoom,
+          vw: remote.viewWidth,
+          vh: remote.viewHeight,
+        });
+      }
+      this.pendingViewport = null;
+      return;
+    }
     const api = view?.excalidrawAPI;
-    if (!pending || !view || !api) return;
+    if (!view || !api) return;
     const local = this.readViewport(view);
     if (!local) return;
     const { width, height } = this.viewSize(view);

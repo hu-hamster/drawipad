@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>DrawPad 白板</title>
+  <style>
+    html, body, #app {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: none;
+    }
+    #app { position: fixed; inset: 0; }
+    .excalidraw .App-menu, .excalidraw .App-toolbar { touch-action: manipulation; }
+    /* 页框指示：白板每页固定 1600×1200（4:3），虚线标出边界 */
+    #dpad-page-outline {
+      position: fixed;
+      left: 0; top: 0;
+      border: 1.5px dashed rgba(15, 15, 20, 0.22);
+      border-radius: 2px;
+      pointer-events: none;
+      z-index: 3;
+      display: none;
+    }
+    /* 底部页栏：翻页 / 加页 / 删页 / 适应页面 */
+    #dpad-pagebar {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
+      padding: 4px 6px;
+      z-index: 5;
+      font: 13px -apple-system, "PingFang SC", sans-serif;
+      touch-action: manipulation;
+    }
+    .dpad-pbtn {
+      border: none;
+      background: transparent;
+      border-radius: 9px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      color: #1b1b1f;
+      min-width: 34px;
+    }
+    .dpad-pbtn:hover { background: rgba(0, 0, 0, 0.06); }
+    .dpad-pbtn:disabled { opacity: 0.32; cursor: default; }
+    .dpad-pbtn:disabled:hover { background: transparent; }
+    .dpad-pbtn.danger { color: #d70015; font-weight: 600; }
+    .dpad-pnum {
+      min-width: 58px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      color: #1b1b1f;
+      padding: 0 2px;
+      white-space: nowrap;
+    }
+    .dpad-psep { width: 1px; height: 18px; background: rgba(0, 0, 0, 0.12); margin: 0 3px; }
+    /* iPad 保留右侧竖排工具岛；Mac 使用 Excalidraw 原生响应式布局。 */
+    body.pad-layout .App-toolbar-container.dpad-dock {
+      position: absolute !important;
+      right: 12px !important;
+      left: auto !important;
+      top: 50% !important;
+      bottom: auto !important;
+      transform: translateY(-50%) !important;
+      margin: 0 !important;
+      z-index: 4;
+    }
+    body.pad-layout .App-toolbar-container.dpad-dock .App-toolbar {
+      width: max-content !important;
+      align-items: center !important;
+      flex-direction: column !important;
+    }
+    body.pad-layout .App-toolbar-container.dpad-dock .Stack_horizontal {
+      grid-auto-flow: row !important;
+      grid-template-rows: auto !important;
+      grid-template-columns: none !important;
+      grid-auto-columns: min-content !important;
+      justify-items: center;
+    }
+  </style>
+  <link rel="stylesheet" href="vendor/excalidraw.production.min.css" />
+  <script src="vendor/excalidraw.production.min.js" onerror="console.error('script load FAILED: excalidraw')"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="dpad-page-outline"></div>
+  <div id="dpad-pagebar" style="display:none">
+    <button class="dpad-pbtn" id="dpad-prev" title="上一页">◀</button>
+    <div class="dpad-pnum" id="dpad-pnum">1 / 1</div>
+    <button class="dpad-pbtn" id="dpad-next" title="下一页">▶</button>
+    <div class="dpad-psep"></div>
+    <button class="dpad-pbtn" id="dpad-add" title="在当前页后添加一页">＋</button>
+    <button class="dpad-pbtn" id="dpad-del" title="删除当前页">－</button>
+    <div class="dpad-psep"></div>
+    <button class="dpad-pbtn" id="dpad-fit" title="适应页面">⤢</button>
+  </div>
+  <script>
+    (function () {
+      "use strict";
+      function post(name, data) {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
+          window.webkit.messageHandlers[name].postMessage(data);
+          return;
+        }
+        // 浏览器 iframe 模式：走与 Canvas 编辑器相同的 postMessage 通道
+        try {
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ drawpadCanvas: true, name: name, data: data }, "*");
+          }
+        } catch (e) {}
+      }
+      ["error", "warn"].forEach(function (level) {
+        var original = console[level] ? console[level].bind(console) : function () {};
+        console[level] = function () {
+          try {
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridgeError) {
+              window.webkit.messageHandlers.bridgeError.postMessage(
+                "[" + level + "] " + Array.prototype.map.call(arguments, String).join(" ")
+              );
+            }
+          } catch (e) {}
+          original.apply(null, arguments);
+        };
+      });
+      window.onerror = function (msg, src, line, col) {
+        post("bridgeError", "onerror: " + msg + " @ " + (src || "?") + ":" + line + ":" + col);
+      };
+      window.addEventListener("unhandledrejection", function (e) {
+        post("bridgeError", "rejection: " + e.reason);
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      "use strict";
+      var isPadLayout =
+        /iPad/i.test(navigator.userAgent) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      document.body.classList.toggle("pad-layout", isPadLayout);
+
+      // ---- 白板文档模型：一页 = 一个 Excalidraw 元素数组 ----
+      var PAGE_W = 1600, PAGE_H = 1200; // 4:3，贴合 iPad
+      var EMPTY_DOC = { pages: [[]], currentPage: 0 };
+
+      var excal = null;
+      var doc = { pages: [[]], currentPage: 0 };
+      var shownPageIndex = -1;
+      var lastRemoteJSON = null;
+      var suppressUntil = 0;
+      var emitTimer = 0;
+      // 视口同步状态（语义与 index.html 一致）
+      var viewportSuppressUntil = 0;
+      var lastSentViewport = null;
+
+      function normalizeDoc(parsed) {
+        if (!parsed || !Array.isArray(parsed.pages) || parsed.pages.length === 0) return null;
+        for (var i = 0; i < parsed.pages.length; i++) {
+          if (!Array.isArray(parsed.pages[i])) return null;
+        }
+        return {
+          pages: parsed.pages,
+          currentPage: Math.min(Math.max(0, parsed.currentPage | 0), parsed.pages.length - 1)
+        };
+      }
+
+      // 序列化前先把当前页的实时元素写回文档
+      function serializeDoc() {
+        if (excal && shownPageIndex >= 0 && shownPageIndex < doc.pages.length) {
+          doc.pages[shownPageIndex] = excal.getSceneElements();
+        }
+        return JSON.stringify(doc);
+      }
+
+      function emitSceneChange() {
+        clearTimeout(emitTimer);
+        emitTimer = setTimeout(function () {
+          var json = serializeDoc();
+          if (json !== lastRemoteJSON) {
+            post("sceneChange", json);
+          }
+        }, 120);
+      }
+
+      // ---- 页栏 UI ----
+      var pagebar = document.getElementById("dpad-pagebar");
+      var numLabel = document.getElementById("dpad-pnum");
+      var prevBtn = document.getElementById("dpad-prev");
+      var nextBtn = document.getElementById("dpad-next");
+      var addBtn = document.getElementById("dpad-add");
+      var delBtn = document.getElementById("dpad-del");
+      var delArmed = false;
+      var delTimer = 0;
+
+      function refreshPagebar() {
+        numLabel.textContent = (doc.currentPage + 1) + " / " + doc.pages.length;
+        prevBtn.disabled = doc.currentPage <= 0;
+        nextBtn.disabled = doc.currentPage >= doc.pages.length - 1;
+        delBtn.disabled = doc.pages.length <= 1;
+        if (delBtn.disabled) disarmDelete();
+      }
+
+      function disarmDelete() {
+        delArmed = false;
+        clearTimeout(delTimer);
+        delBtn.textContent = "－";
+        delBtn.classList.remove("danger");
+        delBtn.title = "删除当前页";
+      }
+
+      function armDelete() {
+        delArmed = true;
+        delBtn.textContent = "确认";
+        delBtn.classList.add("danger");
+        delBtn.title = "再次点击删除本页";
+        clearTimeout(delTimer);
+        delTimer = setTimeout(disarmDelete, 2500);
+      }
+
+      prevBtn.addEventListener("click", function () { switchPage(doc.currentPage - 1); });
+      nextBtn.addEventListener("click", function () { switchPage(doc.currentPage + 1); });
+
+      addBtn.addEventListener("click", function () {
+        var current = excal ? excal.getSceneElements() : [];
+        if (shownPageIndex >= 0 && shownPageIndex < doc.pages.length) {
+          doc.pages[shownPageIndex] = current;
+        }
+        doc.pages.splice(doc.currentPage + 1, 0, []);
+        doc.currentPage += 1;
+        showPage(doc.currentPage, true);
+        refreshPagebar();
+        emitSceneChange();
+      });
+
+      delBtn.addEventListener("click", function () {
+        if (doc.pages.length <= 1) return;
+        if (!delArmed) { armDelete(); return; }
+        disarmDelete();
+        var current = excal ? excal.getSceneElements() : [];
+        if (shownPageIndex >= 0 && shownPageIndex < doc.pages.length) {
+          doc.pages[shownPageIndex] = current;
+        }
+        doc.pages.splice(doc.currentPage, 1);
+        if (doc.currentPage >= doc.pages.length) doc.currentPage = doc.pages.length - 1;
+        showPage(doc.currentPage, true);
+        refreshPagebar();
+        emitSceneChange();
+      });
+
+      document.getElementById("dpad-fit").addEventListener("click", function () {
+        fitPage(true);
+      });
+
+      // ---- 页框指示（画布坐标 → 屏幕坐标）----
+      var outline = document.getElementById("dpad-page-outline");
+
+      function updateOutline() {
+        if (!excal || !excal.getAppState) return;
+        var as = excal.getAppState();
+        var z = (as && as.zoom && as.zoom.value) || 1;
+        var sx = (as && as.scrollX) || 0;
+        var sy = (as && as.scrollY) || 0;
+        var x = (0 + sx) * z;
+        var y = (0 + sy) * z;
+        var w = PAGE_W * z;
+        var h = PAGE_H * z;
+        if (!isFinite(x) || !isFinite(y) || w < 4 || h < 4) {
+          outline.style.display = "none";
+          return;
+        }
+        outline.style.display = "block";
+        outline.style.transform = "translate(" + x + "px, " + y + "px)";
+        outline.style.width = w + "px";
+        outline.style.height = h + "px";
+      }
+
+      // ---- 挂载 Excalidraw ----
+      var props = {
+        langCode: "zh-CN",
+        theme: "light",
+        renderWelcomeScreen: false,
+        initialData: {
+          appState: {
+            viewBackgroundColor: "#ffffff",
+            currentItemFontSize: 20
+          }
+        },
+        onExcalidrawAPI: function (api) {
+          excal = api;
+          window.__excal = api;
+          showPage(doc.currentPage, true);
+          refreshPagebar();
+          pagebar.style.display = "flex";
+          post("ready", { version: 1 });
+        },
+        onChange: function (elements, appState) {
+          var now = Date.now();
+          if (now >= suppressUntil) {
+            if (shownPageIndex >= 0 && shownPageIndex < doc.pages.length) {
+              doc.pages[shownPageIndex] = elements;
+            }
+            emitSceneChange();
+          }
+          // 视口通道（与 index.html 相同的中心点对齐 + 屏幕比例换算）
+          if (now >= viewportSuppressUntil && appState) {
+            var z = (appState.zoom && appState.zoom.value) || 1;
+            var vw = window.innerWidth;
+            var vh = window.innerHeight;
+            var cx = vw / 2 / z - (appState.scrollX || 0);
+            var cy = vh / 2 / z - (appState.scrollY || 0);
+            if (lastSentViewport !== null) {
+              var zoomChanged = Math.abs(lastSentViewport.z - z) > 0.002;
+              var sizeChanged =
+                Math.abs((lastSentViewport.vw || vw) - vw) > 0.5 ||
+                Math.abs((lastSentViewport.vh || vh) - vh) > 0.5;
+              var panChanged =
+                Math.abs(lastSentViewport.cx - cx) > 0.5 || Math.abs(lastSentViewport.cy - cy) > 0.5;
+              var payload = { cx: cx, cy: cy, vw: vw, vh: vh, z: z };
+              if (zoomChanged || sizeChanged) {
+                lastSentViewport = payload;
+                post("viewportZoom", JSON.stringify(payload));
+              } else if (panChanged) {
+                lastSentViewport = payload;
+                post("viewportPan", JSON.stringify(payload));
+              }
+            } else {
+              lastSentViewport = { cx: cx, cy: cy, z: z, vw: vw, vh: vh };
+            }
+          }
+          updateOutline();
+        }
+      };
+
+      try {
+        ExcalidrawLib.createRoot(document.getElementById("app")).render(
+          ExcalidrawLib.React.createElement(ExcalidrawLib.Excalidraw, props)
+        );
+      } catch (err) {
+        post("bridgeError", "mount failed: " + String(err && err.stack ? err.stack : err));
+      }
+
+      // ---- 页面操作 ----
+
+      function switchPage(index) {
+        if (index < 0 || index >= doc.pages.length || index === doc.currentPage) return;
+        var current = excal ? excal.getSceneElements() : [];
+        if (shownPageIndex >= 0 && shownPageIndex < doc.pages.length) {
+          doc.pages[shownPageIndex] = current;
+        }
+        doc.currentPage = index;
+        showPage(index, true);
+        refreshPagebar();
+        emitSceneChange();
+      }
+
+      function showPage(index, fit) {
+        if (!excal) return;
+        var elements = doc.pages[index] || [];
+        suppressUntil = Date.now() + 150;
+        shownPageIndex = index;
+        excal.updateScene({ elements: elements });
+        if (fit) fitPage(false);
+        updateOutline();
+      }
+
+      function clampZoom(z) {
+        return Math.min(8, Math.max(0.1, z));
+      }
+
+      // 适页：整页（含页栏高度预留）居中显示
+      function fitPage(postViewport) {
+        if (!excal) return;
+        var vw = window.innerWidth;
+        var vh = window.innerHeight - 64; // 预留底部页栏
+        var padding = 24;
+        var z = clampZoom(Math.min((vw - padding * 2) / PAGE_W, (vh - padding * 2) / PAGE_H));
+        var cx = PAGE_W / 2;
+        var cy = PAGE_H / 2;
+        viewportSuppressUntil = Date.now() + 300;
+        lastSentViewport = { cx: cx, cy: cy, z: z, vw: window.innerWidth, vh: window.innerHeight };
+        excal.updateScene({
+          appState: {
+            zoom: { value: z },
+            scrollX: window.innerWidth / 2 / z - cx,
+            scrollY: window.innerHeight / 2 / z - cy
+          }
+        });
+        updateOutline();
+        if (postViewport) {
+          post("viewportZoom", JSON.stringify(lastSentViewport));
+        }
+      }
+
+      // ---- Swift / 浏览器宿主 → JS 桥 ----
+
+      function applyRemoteDoc(encodedJSON) {
+        var parsed;
+        try {
+          parsed = normalizeDoc(JSON.parse(encodedJSON));
+        } catch (err) {
+          return "error:" + err;
+        }
+        if (!parsed) return "error:invalid-whiteboard-doc";
+        // 保留本页未同步的本地元素会覆盖远端，先序列化当前状态以保持 lastRemoteJSON 语义一致
+        doc = parsed;
+        lastRemoteJSON = JSON.stringify(doc);
+        suppressUntil = Date.now() + 150;
+        var needSwitch = shownPageIndex !== doc.currentPage;
+        if (needSwitch) {
+          showPage(doc.currentPage, true);
+          refreshPagebar();
+        } else if (excal) {
+          excal.updateScene({ elements: doc.pages[doc.currentPage] });
+          updateOutline();
+        }
+        return "ok";
+      }
+
+      window.__applyScene = function (encodedJSON) {
+        if (!excal) return "not-ready";
+        return applyRemoteDoc(encodedJSON);
+      };
+
+      window.__getScene = function () {
+        if (!excal) return JSON.stringify(EMPTY_DOC);
+        return serializeDoc();
+      };
+
+      window.__isReady = function () {
+        return !!excal;
+      };
+
+      function currentZoom() {
+        try {
+          var as = excal && excal.getAppState ? excal.getAppState() : null;
+          return (as && as.zoom && as.zoom.value) || 1;
+        } catch (e) {
+          return 1;
+        }
+      }
+
+      window.__applyViewportPan = function (cx, cy) {
+        if (!excal) return "not-ready";
+        try {
+          var z = currentZoom();
+          viewportSuppressUntil = Date.now() + 300;
+          lastSentViewport = { cx: cx, cy: cy, z: z, vw: window.innerWidth, vh: window.innerHeight };
+          excal.updateScene({
+            appState: {
+              scrollX: window.innerWidth / 2 / z - cx,
+              scrollY: window.innerHeight / 2 / z - cy
+            }
+          });
+          updateOutline();
+          return "ok";
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      window.__applyViewportZoom = function (z, cx, cy, peerVw, peerVh) {
+        if (!excal) return "not-ready";
+        try {
+          var ratio = Math.min(
+            window.innerWidth / (peerVw || window.innerWidth),
+            window.innerHeight / (peerVh || window.innerHeight)
+          );
+          var newZ = clampZoom(z * ratio);
+          viewportSuppressUntil = Date.now() + 300;
+          lastSentViewport = { cx: cx, cy: cy, z: newZ, vw: window.innerWidth, vh: window.innerHeight };
+          excal.updateScene({
+            appState: {
+              zoom: { value: newZ },
+              scrollX: window.innerWidth / 2 / newZ - cx,
+              scrollY: window.innerHeight / 2 / newZ - cy
+            }
+          });
+          updateOutline();
+          return "ok:" + newZ.toFixed(3);
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      window.__fitToContent = function () {
+        fitPage(true);
+        return "ok";
+      };
+
+      window.__localZoom = function (factor) {
+        if (!excal) return "not-ready";
+        try {
+          var as = excal.getAppState ? excal.getAppState() : null;
+          var oldZ = (as && as.zoom && as.zoom.value) || 1;
+          var newZ = clampZoom(oldZ * factor);
+          var oldSx = (as && as.scrollX) || 0;
+          var oldSy = (as && as.scrollY) || 0;
+          var cx = window.innerWidth / 2 / oldZ - oldSx;
+          var cy = window.innerHeight / 2 / oldZ - oldSy;
+          viewportSuppressUntil = Date.now() + 700;
+          lastSentViewport = { cx: cx, cy: cy, z: newZ, vw: window.innerWidth, vh: window.innerHeight };
+          excal.updateScene({
+            appState: {
+              zoom: { value: newZ },
+              scrollX: window.innerWidth / 2 / newZ - cx,
+              scrollY: window.innerHeight / 2 / newZ - cy
+            }
+          });
+          updateOutline();
+          post("viewportZoom", JSON.stringify({
+            cx: cx, cy: cy, vw: window.innerWidth, vh: window.innerHeight, z: newZ
+          }));
+          return "ok:" + newZ.toFixed(3);
+        } catch (err) {
+          return "error:" + err;
+        }
+      };
+
+      window.__getViewport = function () {
+        var z = currentZoom();
+        var as = excal && excal.getAppState ? excal.getAppState() : null;
+        var sx = (as && as.scrollX) || 0;
+        var sy = (as && as.scrollY) || 0;
+        return JSON.stringify({
+          cx: window.innerWidth / 2 / z - sx,
+          cy: window.innerHeight / 2 / z - sy,
+          z: z,
+          vw: window.innerWidth,
+          vh: window.innerHeight
+        });
+      };
+
+      // 浏览器 iframe 模式命令通道（与 Canvas 编辑器一致）
+      window.addEventListener("message", function (event) {
+        var msg = event.data;
+        if (!msg || msg.drawpadCanvasCommand !== true) return;
+        var name = msg.name;
+        var data = msg.data;
+        if (name === "__applyScene") {
+          applyRemoteDoc(data);
+        } else if (name === "__applyViewportPan") {
+          window.__applyViewportPan(data.cx, data.cy);
+        } else if (name === "__applyViewportZoom") {
+          window.__applyViewportZoom(data.z, data.cx, data.cy, data.vw, data.vh);
+        } else if (name === "__fitToContent") {
+          fitPage(true);
+        } else if (name === "__localZoom") {
+          window.__localZoom(data);
+        } else if (name === "__getViewport") {
+          try { post("viewportZoom", window.__getViewport()); } catch (e) {}
+        }
+      });
+
+      // iPad 竖排工具岛（与 index.html 一致）
+      function relocatePadToolbar() {
+        if (!isPadLayout) return;
+        var container = document.querySelector(".excalidraw .App-toolbar-container");
+        var root = document.querySelector(".excalidraw");
+        if (container && root) {
+          container.classList.add("dpad-dock");
+          if (container.parentElement !== root) {
+            root.appendChild(container);
+          }
+        }
+      }
+      relocatePadToolbar();
+      if (isPadLayout) setInterval(relocatePadToolbar, 1000);
+
+      window.addEventListener("resize", updateOutline);
+    })();
+  </script>
+</body>
+</html>

@@ -41,9 +41,17 @@ struct CanvasScreen: View {
 
     @ViewBuilder
     private var document: some View {
-        if model.snapshot.pages.first(where: { $0.id == model.currentPageID })?.isCanvas == true {
-            CanvasPadScreen(model: model)
-                .id(model.currentPageID)
+        if let meta = model.snapshot.pages.first(where: { $0.id == model.currentPageID }) {
+            if meta.isCanvas {
+                CanvasPadScreen(model: model)
+                    .id(model.currentPageID)
+            } else if meta.isWhiteboard {
+                WhiteboardPadScreen(model: model)
+                    .id(model.currentPageID)
+            } else {
+                ExcalidrawPadWebView(model: model)
+                    .id(model.currentPageID)
+            }
         } else {
             ExcalidrawPadWebView(model: model)
                 .id(model.currentPageID)
@@ -86,10 +94,11 @@ struct CanvasScreen: View {
             Menu {
                 Button("新建 Excalidraw", action: model.newPage)
                 Button("新建 Canvas", action: model.newCanvas)
+                Button("新建白板", action: model.newWhiteboard)
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
-            .help("新建画板或 Canvas")
+            .help("新建画板、Canvas 或白板")
 
             Button {
                 confirmDelete = true

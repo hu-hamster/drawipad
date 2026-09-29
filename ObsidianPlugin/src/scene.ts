@@ -101,6 +101,7 @@ export function pageNameFromPath(path: string): string {
     .replace(/\.excalidraw\.md$/i, "")
     .replace(/\.excalidraw$/i, "")
     .replace(/\.canvas$/i, "")
+    .replace(/\.whiteboard$/i, "")
     .replace(/\.md$/i, "");
 }
 
@@ -112,8 +113,33 @@ export function isCanvasPath(path: string): boolean {
   return /\.canvas$/i.test(path);
 }
 
+export function isWhiteboardPath(path: string): boolean {
+  return /\.whiteboard$/i.test(path);
+}
+
 export function isDrawingPath(path: string): boolean {
-  return isExcalidrawPath(path) || isCanvasPath(path);
+  return isExcalidrawPath(path) || isCanvasPath(path) || isWhiteboardPath(path);
+}
+
+export const EMPTY_WHITEBOARD = '{"pages":[[]],"currentPage":0}';
+
+/** 校验白板分页文档（{pages: [[elements]...], currentPage}），返回规范化 JSON 字符串。 */
+export function parseWhiteboard(text: string): string | null {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const document = value as Record<string, unknown>;
+    if (!Array.isArray(document.pages) || document.pages.length === 0) return null;
+    for (const page of document.pages) {
+      if (!Array.isArray(page)) return null;
+    }
+    const currentPage = typeof document.currentPage === "number"
+      ? Math.min(Math.max(0, Math.floor(document.currentPage)), document.pages.length - 1)
+      : 0;
+    return JSON.stringify({ pages: document.pages, currentPage });
+  } catch {
+    return null;
+  }
 }
 
 export function parseCanvas(text: string): Record<string, unknown> | null {

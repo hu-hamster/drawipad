@@ -58,12 +58,21 @@ public struct PageMeta: Codable, Identifiable, Equatable, Hashable, Sendable {
     public var pageSize: CGSize { CGSize(width: width, height: height) }
 
     public var documentExtension: String {
-        fileExtension == "canvas" ? "canvas" : "excalidraw"
+        switch fileExtension {
+        case "canvas": return "canvas"
+        case "whiteboard": return "whiteboard"
+        default: return "excalidraw"
+        }
     }
 
     public var isCanvas: Bool { documentExtension == "canvas" }
 
+    public var isWhiteboard: Bool { documentExtension == "whiteboard" }
+
     public static let emptyCanvas = "{\"nodes\":[],\"edges\":[]}"
+
+    /// 空白板：一页（空 Excalidraw 元素数组）。页面固定 1600×1200，由前端隐式约定。
+    public static let emptyWhiteboard = "{\"pages\":[[]],\"currentPage\":0}"
 }
 
 /// 传输用的项目树快照（页面的显示顺序由 Folder.pageIDs 决定）。

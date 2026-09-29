@@ -9,8 +9,10 @@ import {
 import {
   emptyExcalidrawMarkdown,
   isCanvasPath,
+  isWhiteboardPath,
   parseCanvas,
   parseExcalidraw,
+  parseWhiteboard,
   replaceElements,
 } from "../src/scene.ts";
 
@@ -23,7 +25,7 @@ test("protocol framing preserves fragmented and coalesced messages", () => {
   const frames = decoder.feed(Buffer.concat([first.subarray(3), second]));
   assert.equal(frames.length, 2);
   assert.deepEqual(decodeJSON(frames[0]), {
-    hello: { deviceName: "iPad", protocolVersion: 4 },
+    hello: { deviceName: "iPad", protocolVersion: DRAW_PAD_PROTOCOL_VERSION },
   });
   assert.deepEqual(decodeJSON(frames[1]), { requestProjectList: {} });
 });
@@ -32,6 +34,18 @@ test("protocol frame uses a four-byte big-endian payload length", () => {
   const frame = frameJSON({ ok: true });
   assert.equal(frame.readUInt32BE(0), frame.length - 4);
   assert.equal(frame.subarray(4).toString("utf8"), '{"ok":true}');
+});
+
+test("whiteboard documents parse and reject invalid shapes", () => {
+  assert.equal(isWhiteboardPath("笔记/会议.whiteboard"), true);
+  assert.equal(isWhiteboardPath("笔记/画板.excalidraw"), false);
+  const canonical = parseWhiteboard('{"pages":[[],[{"type":"rectangle"}]],"currentPage":1}');
+  assert.equal(canonical, '{"pages":[[],[{"type":"rectangle"}]],"currentPage":1}');
+  assert.equal(parseWhiteboard('{"pages":[]}'), null);
+  assert.equal(parseWhiteboard('{"pages":[{}]}'), null);
+  assert.equal(parseWhiteboard('[1,2]'), null);
+  // 越界 currentPage 会被钳制到最后一页
+  assert.equal(parseWhiteboard('{"pages":[[],[]],"currentPage":9}'), '{"pages":[[],[]],"currentPage":1}');
 });
 
 test("viewport messages preserve pan, zoom, center, and peer dimensions", () => {

@@ -1,0 +1,148 @@
+#!/bin/zsh
+# DrawPad AI 画板 CLI —— endpoint 自动从 ~/.drawpad/api.json 发现（先启动 DrawPad Mac app）
+set -euo pipefail
+
+API_JSON="$HOME/.drawpad/api.json"
+if [[ ! -f "$API_JSON" ]]; then
+  echo "✗ 未找到 $API_JSON —— 请先启动 DrawPad Mac app" >&2
+  exit 1
+fi
+ENDPOINT=$(/usr/bin/python3 -c "import json;print(json.load(open('$API_JSON'))['endpoint'])" 2>/dev/null) || {
+  echo "✗ 发现文件损坏：$API_JSON" >&2; exit 1
+}
+
+api() {
+  local method=$1 path=$2 data=${3:-}
+  if [[ -n "$data" ]]; then
+    /usr/bin/curl -s -X "$method" "$ENDPOINT$path" -H 'Content-Type: application/json' -d "$data"
+  else
+    /usr/bin/curl -s -X "$method" "$ENDPOINT$path"
+  fi
+}
+
+# 用 python 构造安全 JSON
+jstr() { /usr/bin/python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1"; }
+
+cmd=${1:-help}
+shift || true
+case "$cmd" in
+  status)
+    api GET /api/health | /usr/bin/python3 -m json.tool ;;
+
+  boards)
+    api GET /api/boards | /usr/bin/python3 -c '
+import json,sys
+for b in json.load(sys.stdin)["boards"]:
+    print(f"{b[\"id\"]}  {b[\"name\"]}  ({b[\"folderName\"]})")' ;;
+
+  folders)
+    api GET /api/folders ;;
+
+  new)
+    [[ $# -ge 1 ]] || { echo "用法: drawpad new <名称>" >&2; exit 1; }
+    api POST /api/boards "{\"name\":$(jstr "$1")}" | /usr/bin/python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id") or d)' ;;
+
+  rm)
+    [[ $# -ge 1 ]] || { echo "用法: drawpad rm <boardId>" >&2; exit 1; }
+    api DELETE "/api/boards/$1" ;;
+
+  scene)
+    [[ $# -ge 1 ]] || { echo "用法: drawpad scene <boardId>" >&2; exit 1; }
+    api GET "/api/boards/$1/scene" | /usr/bin/python3 -m json.tool ;;
+
+  elements)
+    # 原始 JSON 透传：drawpad elements <boardId> '<json数组>'
+    [[ $# -ge 2 ]] || { echo "用法: drawpad elements <boardId> '<元素JSON数组>'" >&2; exit 1; }
+    api POST "/api/boards/$1/elements" "{\"elements\":$2}" ;;
+
+  rect|ellipse|diamond)
+    # drawpad rect <boardId> x y [w] [h] [label] [fill]
+    [[ $# -ge 3 ]] || { echo "用法: drawpad $cmd <boardId> x y [w=140] [h=70] [label] [fill]" >&2; exit 1; }
+    board=$1; x=$2; y=$3; w=${4:-140}; h=${5:-70}; label=${6:-}; fill=${7:-}
+    typ=$cmd; [[ "$typ" == "rect" ]] && typ="rectangle"
+    /usr/bin/python3 - "$board" "$typ" "$x" "$y" "$w" "$h" "$label" "$fill" "$ENDPOINT" <<'PYEOF'
+import json, sys, urllib.request
+board, typ, x, y, w, h, label, fill, endpoint = sys.argv[1:]
+item = {"type": typ, "x": float(x), "y": float(y), "width": float(w), "height": float(h)}
+if label: item["label"] = label
+if fill: item["fill"] = fill
+req = urllib.request.Request(
+    f"{endpoint}/api/boards/{board}/elements",
+    data=json.dumps({"elements": [item]}).encode(), method="POST",
+    headers={"Content-Type": "application/json"})
+print(urllib.request.urlopen(req).read().decode())
+PYEOF
+    ;;
+
+  text)
+    # drawpad text <boardId> x y "内容" [fontSize]
+    [[ $# -ge 4 ]] || { echo "用法: drawpad text <boardId> x y \"内容\" [fontSize=20]" >&2; exit 1; }
+    board=$1; x=$2; y=$3; content=$4; size=${5:-20}
+    /usr/bin/python3 - "$board" "$x" "$y" "$content" "$size" "$ENDPOINT" <<'PYEOF'
+import json, sys, urllib.request
+board, x, y, content, size, endpoint = sys.argv[1:]
+item = {"type": "text", "x": float(x), "y": float(y), "text": content, "fontSize": int(size)}
+req = urllib.request.Request(
+    f"{endpoint}/api/boards/{board}/elements",
+    data=json.dumps({"elements": [item]}).encode(), method="POST",
+    headers={"Content-Type": "application/json"})
+print(urllib.request.urlopen(req).read().decode())
+PYEOF
+    ;;
+
+  arrow)
+    # drawpad arrow <boardId> <fromId> <toId> [label]
+    [[ $# -ge 3 ]] || { echo "用法: drawpad arrow <boardId> <fromId> <toId> [label]" >&2; exit 1; }
+    board=$1; from=$2; to=$3; label=${4:-}
+    /usr/bin/python3 - "$board" "$from" "$to" "$label" "$ENDPOINT" <<'PYEOF'
+import json, sys, urllib.request
+board, src, dst, label, endpoint = sys.argv[1:]
+item = {"type": "arrow", "from": src, "to": dst}
+if label: item["label"] = label
+req = urllib.request.Request(
+    f"{endpoint}/api/boards/{board}/elements",
+    data=json.dumps({"elements": [item]}).encode(), method="POST",
+    headers={"Content-Type": "application/json"})
+print(urllib.request.urlopen(req).read().decode())
+PYEOF
+    ;;
+
+  del)
+    # drawpad del <boardId> id1[,id2...]
+    [[ $# -ge 2 ]] || { echo "用法: drawpad del <boardId> id1[,id2]" >&2; exit 1; }
+    ids=$(/usr/bin/python3 -c 'import json,sys;print(json.dumps(sys.argv[1].split(",")))' "$2")
+    api DELETE "/api/boards/$1/elements" "{\"ids\":$ids}" ;;
+
+  import)
+    # drawpad import <文件路径> [画板名]
+    [[ $# -ge 1 ]] || { echo "用法: drawpad import <.excalidraw/.md 路径> [名称]" >&2; exit 1; }
+    name=${2:-}
+    if [[ -n "$name" ]]; then
+      api POST /api/import "{\"path\":$(jstr "$1"),\"name\":$(jstr "$name")}"
+    else
+      api POST /api/import "{\"path\":$(jstr "$1")}"
+    fi ;;
+
+  help|*)
+    cat <<'EOF'
+DrawPad AI 画板 CLI（endpoint 自动发现）
+
+用法:
+  drawpad status                                服务状态 + 能力清单
+  drawpad boards                                列出画板
+  drawpad new <名称>                            新建画板 → 输出 id
+  drawpad rm <boardId>                          删除画板
+  drawpad scene <boardId>                       查看画板元素 JSON
+  drawpad rect <boardId> x y [w] [h] [label] [fill]   画矩形（ellipse/diamond 同）
+  drawpad text <boardId> x y "内容" [fontSize]  写文本
+  drawpad arrow <boardId> <fromId> <toId> [label]     画箭头（自动连接到元素中心）
+  drawpad elements <boardId> '<JSON数组>'       原始元素透传（支持全部简写）
+  drawpad del <boardId> id1[,id2]               删除元素
+  drawpad import <路径> [名称]                  导入 .excalidraw / .excalidraw.md
+
+元素简写: type(rectangle/ellipse/diamond/text/arrow/line/freedraw)
+          通用: id,x,y,width,height,stroke,fill,strokeWidth,opacity
+          shape: label(自动生成绑定文本)   arrow: from/to(元素id) 或 x1,y1,x2,y2
+EOF
+    ;;
+esac

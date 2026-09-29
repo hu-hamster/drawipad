@@ -128,11 +128,20 @@ final class LibraryStore: ObservableObject {
     }
 
     private func removeSceneFiles(_ pageID: UUID) {
-        for ext in ["excalidraw", "canvas"] {
+        for ext in ["excalidraw", "canvas", "whiteboard"] {
             try? FileManager.default.removeItem(
                 at: scenesDir.appendingPathComponent(pageID.uuidString + ".\(ext)")
             )
         }
+    }
+
+    /// 立即写场景（AI API 用，绕过防抖）。
+    func forceWriteScene(_ json: String, for pageID: UUID) {
+        writeScene(json, for: pageID)
+        if let index = library.pages.firstIndex(where: { $0.id == pageID }) {
+            library.pages[index].updatedAt = Date()
+        }
+        persist()
     }
 
     /// 防抖保存场景（150ms），高频编辑不落盘。
@@ -215,15 +224,27 @@ final class LibraryStore: ObservableObject {
         let existingNames = Set(pages(in: folderID).map(\.name))
         var index = existingNames.count + 1
         let isCanvas = fileExtension == "canvas"
-        let baseName = name ?? (isCanvas ? "Canvas" : "画板")
+        let isWhiteboard = fileExtension == "whiteboard"
+        let baseName = name ?? (isCanvas ? "Canvas" : (isWhiteboard ? "白板" : "画板"))
         var finalName = name ?? "\(baseName) 1"
         while existingNames.contains(finalName) {
             index += 1
             finalName = "\(baseName) \(index)"
         }
-        let page = PageMeta(name: finalName, fileExtension: isCanvas ? "canvas" : nil)
+        let page = PageMeta(
+            name: finalName,
+            fileExtension: isCanvas ? "canvas" : (isWhiteboard ? "whiteboard" : nil)
+        )
         library.pages.append(page)
-        writeScene(initialSceneJSON ?? (isCanvas ? PageMeta.emptyCanvas : "[]"), for: page.id)
+        let emptyScene: String
+        if isCanvas {
+            emptyScene = PageMeta.emptyCanvas
+        } else if isWhiteboard {
+            emptyScene = PageMeta.emptyWhiteboard
+        } else {
+            emptyScene = "[]"
+        }
+        writeScene(initialSceneJSON ?? emptyScene, for: page.id)
         if let folderIndex = library.folders.firstIndex(where: { $0.id == folderID }) {
             if let after = afterPageID,
                let afterIndex = library.folders[folderIndex].pageIDs.firstIndex(of: after) {

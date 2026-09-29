@@ -4,8 +4,8 @@
   "private": true,
   "description": "Obsidian desktop plugin bridge for DrawPad iPad sync",
   "scripts": {
-    "build": "tsc --noEmit && node esbuild.config.mjs production",
-    "dev": "node esbuild.config.mjs development",
+    "build": "tsc --noEmit && node esbuild.config.mjs production && node copy-web.mjs",
+    "dev": "node esbuild.config.mjs development && node copy-web.mjs",
     "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "dependencies": {

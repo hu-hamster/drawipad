@@ -1,7 +1,7 @@
 import Foundation
 
 /// 同步协议版本，两端不一致时拒绝连接。
-public let drawPadProtocolVersion = 4
+public let drawPadProtocolVersion = 5
 
 /// 项目树快照（Excalidraw 场景文件的组织结构：文件夹 → 文件）。
 /// 页面即一个 Excalidraw 场景（scene JSON），顺序由 Folder.pageIDs 决定。
@@ -20,6 +20,8 @@ public enum ClientMessage: Codable, Equatable {
     case fileCreate(folderID: UUID, afterFileID: UUID?)
     /// 新建 JSON Canvas。与 fileCreate 分开，避免改变现有 Excalidraw 消息。
     case fileCreateCanvas(folderID: UUID, afterFileID: UUID?)
+    /// 新建分页白板（每页一个 Excalidraw 场景）。
+    case fileCreateWhiteboard(folderID: UUID, afterFileID: UUID?)
     case fileDelete(fileID: UUID)
     /// 本端场景发生变化（Excalidraw elements JSON，防抖后发送）。
     case sceneUpdate(fileID: UUID, elementsJSON: String)

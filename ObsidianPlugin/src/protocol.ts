@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 
-export const DRAW_PAD_PROTOCOL_VERSION = 4;
+export const DRAW_PAD_PROTOCOL_VERSION = 5;
 export const DRAW_PAD_SERVICE_TYPE = "_drawpad._tcp";
 export const MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
@@ -19,7 +19,7 @@ export interface PageMeta {
   updatedAt: number;
   width: number;
   height: number;
-  fileExtension?: "excalidraw" | "canvas";
+  fileExtension?: "excalidraw" | "canvas" | "whiteboard";
 }
 
 export interface LibrarySnapshot {
@@ -34,6 +34,7 @@ export type ClientMessage =
   | { projectSelect: { folderID: string } }
   | { fileCreate: { folderID: string; afterFileID: string | null } }
   | { fileCreateCanvas: { folderID: string; afterFileID: string | null } }
+  | { fileCreateWhiteboard: { folderID: string; afterFileID: string | null } }
   | { fileDelete: { fileID: string } }
   | { sceneUpdate: { fileID: string; elementsJSON: string } }
   | { viewportPanChanged: { centerX: number; centerY: number } }

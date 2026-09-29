@@ -338,6 +338,15 @@ final class PadModel: ObservableObject {
         client.send(.fileCreateCanvas(folderID: folderID, afterFileID: currentPageID))
     }
 
+    func newWhiteboard() {
+        let folderID = currentFolderID ?? snapshot.folders.last?.id
+        guard let folderID else {
+            showToast("没有可用项目")
+            return
+        }
+        client.send(.fileCreateWhiteboard(folderID: folderID, afterFileID: currentPageID))
+    }
+
     func newPage() {
         let folderID = currentFolderID ?? snapshot.folders.last?.id
         guard let folderID else {
@@ -361,7 +370,8 @@ final class PadModel: ObservableObject {
         else { return }
         // 初始化期画布会多次自报空场景，空内容仍需拦截，避免覆盖远端。
         // 但只要用户已经画出了非空内容，就不能因为初始场景确认回调缺失而丢弃更新。
-        if !sceneReadyForEditing && json == "[]" {
+        let emptyInitJSON = json == "[]" || json == PageMeta.emptyWhiteboard
+        if !sceneReadyForEditing && emptyInitJSON {
             return
         }
         if !sceneReadyForEditing {
