@@ -49,7 +49,9 @@ enum AIElementShorthand {
                     let labelElement = makeBoundText(
                         id: id + "_label", containerID: id,
                         x: (element["x"] as? Double) ?? 0, y: (element["y"] as? Double) ?? 0,
-                        text: label, fontSize: fontSize(from: item))
+                        text: label, fontSize: item["fontSize"] == nil ? 14 : fontSize(from: item),
+                        containerWidth: (element["width"] as? Double) ?? 120,
+                        containerHeight: (element["height"] as? Double) ?? 30)
                     result.append(labelElement)
                 }
                 if let fromID { bindings.append((id, fromID, "start")) }
@@ -133,11 +135,14 @@ enum AIElementShorthand {
         }
         var labelElement: [String: Any]?
         if let label = item["label"] as? String {
+            let labelFont = item["fontSize"] == nil ? 16 : fontSize(from: item)
             element["boundElements"] = [["id": id + "_label", "type": "text", "isPrimary": true] as [String: Any]]
             labelElement = makeBoundText(
                 id: id + "_label", containerID: id,
                 x: (element["x"] as? Double) ?? 0, y: (element["y"] as? Double) ?? 0,
-                text: label, fontSize: fontSize(from: item))
+                text: label, fontSize: labelFont,
+                containerWidth: (element["width"] as? Double) ?? 140,
+                containerHeight: (element["height"] as? Double) ?? 70)
         }
         return (element, id, labelElement)
     }
@@ -260,17 +265,40 @@ enum AIElementShorthand {
         return element
     }
 
+    /// 估算一行文本宽度（CJK 全宽、拉丁半宽）。
+    private static func measuredWidth(_ text: String, fontSize: Int) -> Double {
+        var width = 0.0
+        for scalar in text.unicodeScalars {
+            if scalar.value >= 0x2E80 {
+                width += Double(fontSize)
+            } else {
+                width += Double(fontSize) * 0.58
+            }
+        }
+        return width
+    }
+
     private static func makeBoundText(
         id: String, containerID: String, x: Double, y: Double,
-        text: String, fontSize: Int
+        text: String, fontSize: Int,
+        containerWidth: Double = 120, containerHeight: Double = 56
     ) -> [String: Any] {
-        [
+        // 自己测量并居中：Excalidraw 恢复场景时不会重排绑定文本，
+        // 占位尺寸会导致文字漂在容器左上角。
+        let lines = text.components(separatedBy: "\n")
+        let lineWidth = lines.map { measuredWidth($0, fontSize: fontSize) }.max() ?? 10
+        let lineHeight = Double(fontSize) * 1.28
+        let textWidth = max(10, lineWidth + 4)
+        let textHeight = max(10, lineHeight * Double(lines.count))
+        let centeredX = x + (containerWidth - textWidth) / 2
+        let centeredY = y + (containerHeight - textHeight) / 2
+        return [
             "type": "text",
             "id": id,
-            "x": x,
-            "y": y,
-            "width": 10,
-            "height": 10,
+            "x": centeredX,
+            "y": centeredY,
+            "width": textWidth,
+            "height": textHeight,
             "angle": 0,
             "strokeColor": "#1e1e1e",
             "backgroundColor": "transparent",
