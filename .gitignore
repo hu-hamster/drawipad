@@ -26,3 +26,4 @@ build/
 # Swift Package Manager（将来引入依赖时）
 .swiftpm/
 Package.resolved
+bin/__pycache__/

@@ -3,9 +3,37 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; c
 button, input, textarea { font: inherit; }
 #editor { position: relative; }
 .react-flow { background: #f8fafc; }
+/* 连线标签：完全无底色块（透明），文字直接浮于画布（Excalidraw 式）；
+   整体上移让文字贴在线上方而不是被线穿过 */
+.react-flow__edge-textbg { fill: transparent; }
+.react-flow__edge-text, .react-flow__edge-textbg { transform: translateY(-10px); }
 .react-flow__attribution { display: none; }
 .canvas-node { width: 100%; height: 100%; box-sizing: border-box; border: 2px solid; border-radius: 12px; box-shadow: 0 2px 9px #1520331a; display: flex; align-items: center; justify-content: center; overflow: visible; }
 .canvas-node.selected { box-shadow: 0 0 0 2px #6965db, 0 4px 16px #3c368c33; }
+/* 悬停高亮（Excalidraw 式反馈）：鼠标够到元素立即有提示 */
+.react-flow__node:hover .canvas-node { box-shadow: 0 0 0 2px #6965db66, 0 4px 16px #3c368c22; }
+.canvas-node.draw:hover { box-shadow: 0 0 0 1px #6965db88 !important; }
+/* 连线命中带：48px 且不随缩放变细（non-scaling-stroke），悬停加粗提示 */
+.react-flow__edge { cursor: pointer; }
+.react-flow__edge .react-flow__edge-interaction { stroke-width: 48px; vector-effect: non-scaling-stroke; cursor: pointer; }
+.react-flow__edge:hover .react-flow__edge-path, .react-flow__edge.hover-near .react-flow__edge-path { stroke-width: 4px; }
+.react-flow__edge.selected .react-flow__edge-path { stroke-width: 3.6px; }
+/* 选中连线时，在「连线 ↗」按钮右侧弹出的快捷操作组（Portal 到 body，fixed 定位） */
+.arrow-slot { position: relative; display: flex; }
+.edge-flyout { position: fixed; transform: translateY(-50%);
+  display: flex; gap: 3px; padding: 5px; background: #fffffff2; border: 1px solid #dce1e9;
+  border-radius: 10px; box-shadow: 0 7px 25px #25304722; z-index: 11; }
+.edge-flyout button { width: 34px; height: 32px; border: 0; border-radius: 9px; background: transparent; color: #353b48; font-size: 16px; cursor: pointer; }
+.edge-flyout button:hover { background: #e9e7ff; color: #514ba0; }
+.edge-flyout button.on { background: #6965db; color: #fff; }
+/* 连线文字的就地编辑区：完全透明，只承载光标；显示的文字是画布上实时更新的真实标签 */
+.edge-inline-edit { position: absolute; z-index: 9; transform: translate(-50%, -50%);
+  min-width: 28px; max-width: 260px; padding: 0 6px;
+  background: transparent; border: 0; outline: none; box-shadow: none;
+  text-align: center; white-space: pre; font-size: 10px; line-height: 1.45;
+  font-family: -apple-system, "system-ui", "Segoe UI", sans-serif;
+  color: transparent; caret-color: #1a2233; cursor: text; }
+.edge-inline-edit:focus { background: transparent; }
 .canvas-node.ellipse { border-radius: 50%; }
 .canvas-node.diamond { border-radius: 0; transform: rotate(45deg) scale(.72); }
 .canvas-node.diamond > .node-content, .canvas-node.diamond > textarea { transform: rotate(-45deg) scale(1.35); }
@@ -15,12 +43,30 @@ button, input, textarea { font: inherit; }
 .canvas-node textarea { width: calc(100% - 16px); height: calc(100% - 16px); min-height: 32px; resize: none; box-sizing: border-box; padding: 8px; border: 0; outline: 0; background: #ffffffc4; border-radius: 6px; text-align: center; line-height: 1.4; }
 .node-image { max-width: 95%; max-height: 95%; object-fit: contain; }
 .node-image + .node-content { display: none; }
+/* 手绘笔画节点：无背景框，仅显示线条 */
+.canvas-node.draw { background: transparent !important; border-color: transparent !important; box-shadow: none; border-radius: 0; }
+.canvas-node.draw:hover { box-shadow: 0 0 0 1px #6965db55; }
+.draw-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+/* 画笔覆盖层：位于画布之上、工具栏之下 */
+.pen-overlay { position: absolute; inset: 0; z-index: 4; cursor: crosshair; touch-action: none; }
+.stroke-preview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+/* 拖拽绘制预览框 */
+.draft-preview { position: absolute; z-index: 6; border: 2px dashed; border-radius: 10px; background: #6965db0d; pointer-events: none; }
+/* 连线工具拖拽预览线 */
+.connect-preview { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 6; pointer-events: none; overflow: visible; }
+.arrow-mode .react-flow__node { cursor: crosshair; }
+/* 橡皮擦模式：悬停元素红色高亮 */
+.eraser-mode .react-flow__node { cursor: pointer; }
+.eraser-mode .react-flow__node:hover { outline: 2px solid #e03131; outline-offset: 2px; border-radius: 8px; }
+.eraser-mode .react-flow__edge { cursor: pointer; }
+.eraser-mode .react-flow__edge:hover .react-flow__edge-path { stroke: #e03131 !important; stroke-width: 3.4 !important; }
 .canvas-handle { width: 9px; height: 9px; background: #fff; border: 2px solid #6965db; opacity: 0; }
 .canvas-node:hover .canvas-handle, .canvas-node.selected .canvas-handle { opacity: 1; }
-.canvas-handle.target-top { left: 45%; } .canvas-handle.source-top { left: 55%; }
-.canvas-handle.target-bottom { left: 45%; } .canvas-handle.source-bottom { left: 55%; }
-.canvas-handle.target-left { top: 45%; } .canvas-handle.source-left { top: 55%; }
-.canvas-handle.target-right { top: 45%; } .canvas-handle.source-right { top: 55%; }
+/* 同一边的接入/拖出锚点重叠在同一位置（50%），每边只显示一个点 */
+.canvas-handle.target-top, .canvas-handle.source-top { left: 50%; }
+.canvas-handle.target-bottom, .canvas-handle.source-bottom { left: 50%; }
+.canvas-handle.target-left, .canvas-handle.source-left { top: 50%; }
+.canvas-handle.target-right, .canvas-handle.source-right { top: 50%; }
 .canvas-tools, .canvas-colors, .edge-editor { position: absolute; z-index: 10; background: #fffffff0; border: 1px solid #dce1e9; box-shadow: 0 7px 25px #25304722; }
 .canvas-tools { top: 50%; left: 14px; transform: translateY(-50%); display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 14px; max-height: calc(100% - 24px); overflow-y: auto; }
 .canvas-tools button { width: 38px; height: 36px; flex: none; border: 0; border-radius: 9px; background: transparent; color: #353b48; font-size: 18px; cursor: pointer; }
@@ -29,8 +75,7 @@ button, input, textarea { font: inherit; }
 .canvas-colors { top: 50%; left: 68px; transform: translateY(-50%); display: flex; flex-direction: column; gap: 7px; padding: 8px; border-radius: 13px; }
 .canvas-colors button { width: 22px; height: 22px; border: 1px solid #bac2ce; border-radius: 50%; cursor: pointer; }
 .canvas-colors button.active { outline: 2px solid #6965db; outline-offset: 2px; }
-.edge-editor { top: 12px; right: 12px; border-radius: 10px; padding: 8px 12px; display: flex; gap: 8px; align-items: center; font-size: 13px; }
-.edge-editor input { width: 140px; padding: 5px 7px; border: 1px solid #cbd2df; border-radius: 6px; }
+.edge-editor { display: none; }
 .canvas-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 5; pointer-events: none; padding: 5px 10px; border-radius: 6px; background: #ffffffb8; color: #667085; font-size: 11px; white-space: nowrap; }
 @media (max-width: 700px) {
   .canvas-tools { top: auto; bottom: 9px; left: 50%; transform: translateX(-50%); flex-direction: row; max-width: calc(100% - 18px); overflow-x: auto; overflow-y: hidden; }

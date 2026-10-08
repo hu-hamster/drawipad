@@ -75,8 +75,13 @@ enum AIElementShorthand {
             let cx = tx + tw / 2
             let cy = ty + th / 2
 
+            // 统一坐标空间：points 是相对箭头 x/y 的坐标，先把既有 points 转成绝对坐标，
+            // 再把端点设为目标中心，最后重新归一化——避免相对/绝对混用产生偏移
+            let oldX = (arrow["x"] as? Double) ?? 0
+            let oldY = (arrow["y"] as? Double) ?? 0
             var points = (arrow["points"] as? [[Double]]) ?? []
             if points.count >= 2 {
+                points = points.map { [$0[0] + oldX, $0[1] + oldY] }
                 if binding.end == "start" {
                     points[0] = [cx, cy]
                 } else {
@@ -90,8 +95,8 @@ enum AIElementShorthand {
             let minY = (ys.min() ?? 0), maxY = (ys.max() ?? 0)
             let width = max(1, maxX - minX)
             let height = max(1, maxY - minY)
-            arrow["x"] = ((arrow["x"] as? Double) ?? 0) + minX
-            arrow["y"] = ((arrow["y"] as? Double) ?? 0) + minY
+            arrow["x"] = minX
+            arrow["y"] = minY
             arrow["width"] = width
             arrow["height"] = height
             arrow["points"] = points.map { [$0[0] - minX, $0[1] - minY] }

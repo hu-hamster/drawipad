@@ -93,6 +93,7 @@ export default class DrawPadSyncPlugin extends Plugin {
   private pendingViewport: PendingViewport | null = null;
   private lastSceneJSONByPage = new Map<string, string>();
   private subscribedSceneAPI: ExcalidrawAPILike | null = null;
+  private subscribedScenePageID: string | null = null;
   private unsubscribeScene: (() => void) | null = null;
   private sceneSuppressUntil = 0;
   private announcedPageID: string | null = null;
@@ -202,8 +203,10 @@ export default class DrawPadSyncPlugin extends Plugin {
   /** 插件目录的绝对路径（iframe 通过 app://local 加载 whiteboard.html）。 */
   private pluginResourcePath(): string {
     const adapter = this.app.vault.adapter as FileSystemAdapter;
+    const base = adapter.getBasePath();
     const dir = this.manifest.dir || this.manifest.id;
-    return `${adapter.getBasePath()}/.obsidian/plugins/${dir}`;
+    // 新版 Obsidian 的 manifest.dir 已含 .obsidian/plugins/ 前缀，避免重复拼接
+    return dir.startsWith(".obsidian/") ? `${base}/${dir}` : `${base}/.obsidian/plugins/${dir}`;
   }
 
   async startServer(): Promise<void> {
@@ -314,11 +317,11 @@ export default class DrawPadSyncPlugin extends Plugin {
           const pageKey = message.sceneUpdate.fileID.toLowerCase();
           this.lastSceneJSONByPage.set(pageKey, whiteboard);
           const view = this.activeWhiteboardView();
+          // 无论是否正在查看，都必须落盘；活动视图额外应用显示
           if (sameID(this.library.currentPageID(), message.sceneUpdate.fileID) && view) {
             view.applyScene(whiteboard);
-          } else {
-            await this.library.updateScene(message.sceneUpdate.fileID, whiteboard);
           }
+          await this.library.updateScene(message.sceneUpdate.fileID, whiteboard);
           return;
         }
         if (this.library.isCanvasPage(message.sceneUpdate.fileID)) {
@@ -420,19 +423,23 @@ export default class DrawPadSyncPlugin extends Plugin {
     const api = view?.excalidrawAPI;
     if (!pageID || !api) return;
 
-    this.ensureSceneSubscription(api);
+    this.ensureSceneSubscription(api, pageID);
     this.pushSceneIfChanged(pageID, api.getSceneElements());
   }
 
-  private ensureSceneSubscription(api: ExcalidrawAPILike): void {
-    if (this.subscribedSceneAPI === api) return;
+  private ensureSceneSubscription(api: ExcalidrawAPILike, pageID: string): void {
+    if (this.subscribedSceneAPI === api && this.subscribedScenePageID === pageID) return;
     this.detachSceneSubscription();
     this.subscribedSceneAPI = api;
+    this.subscribedScenePageID = pageID;
     if (typeof api.onChange !== "function") return;
     this.unsubscribeScene = api.onChange((elements) => {
-      const pageID = this.library.currentPageID();
-      if (!pageID || !this.server?.clientName) return;
-      this.pushSceneIfChanged(pageID, elements);
+      // 回调绑定到订阅时的画板 ID，且仅当它仍是当前活动页时推送，
+      // 防止切页后旧视图的回调把 A 的内容塞进 B 的 ID。
+      const bound = this.subscribedScenePageID;
+      if (!bound || !this.server?.clientName) return;
+      if (!sameID(this.library.currentPageID(), bound)) return;
+      this.pushSceneIfChanged(bound, elements);
     });
   }
 
@@ -440,6 +447,7 @@ export default class DrawPadSyncPlugin extends Plugin {
     this.unsubscribeScene?.();
     this.unsubscribeScene = null;
     this.subscribedSceneAPI = null;
+    this.subscribedScenePageID = null;
   }
 
   private pushSceneIfChanged(pageID: string, elements: readonly unknown[]): void {

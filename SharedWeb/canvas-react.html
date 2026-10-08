@@ -8,6 +8,19 @@
 </head>
 <body>
   <div id="canvas-root"></div>
+  <script>
+    // 黑盒错误记录：iframe 内异常外层拿不到，落在这里便于诊断
+    window.__dpadErrors = [];
+    window.addEventListener("error", (e) => window.__dpadErrors.push(`error: ${e.message} @${e.lineno}:${e.colno}`));
+    window.addEventListener("unhandledrejection", (e) => window.__dpadErrors.push(`rejection: ${String(e.reason && e.reason.message || e.reason).slice(0, 300)}`));
+    (function () {
+      const original = console.error;
+      console.error = function () {
+        window.__dpadErrors.push("console.error: " + [...arguments].map((item) => String(item && item.stack || item).slice(0, 400)).join(" | "));
+        original.apply(console, arguments);
+      };
+    })();
+  </script>
   <script src="vendor/canvas.bundle.js"></script>
 </body>
 </html>

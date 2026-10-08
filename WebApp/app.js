@@ -34,13 +34,46 @@
   function emptyCanvas() { return { nodes: [], edges: [] }; }
   function sceneJSON(page) {
     if (isWhiteboard(page)) return page.whiteboard || EMPTY_WHITEBOARD;
-    return JSON.stringify(isCanvas(page) ? (page.canvas || emptyCanvas()) : page.elements);
+    if (isCanvas(page)) return JSON.stringify(page.canvas || emptyCanvas());
+    // Excalidraw：带 files（图片资源）的对象格式，旧数组数据在消费端兼容解析
+    return JSON.stringify({ elements: page.elements || [], files: page.files || {} });
+  }
+  function parseExcalidrawScene(raw) {
+    // 兼容旧格式（纯元素数组）与新格式（{elements, files}）
+    try {
+      const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (Array.isArray(value)) return { elements: value, files: {} };
+      if (value && Array.isArray(value.elements)) {
+        return { elements: value.elements, files: value.files && typeof value.files === "object" ? value.files : {} };
+      }
+    } catch (_) {}
+    return null;
   }
   function sendCanvasCommand(name, data) {
     if (canvasReady) canvasFrame.contentWindow?.postMessage({ drawpadCanvasCommand: true, name, data }, location.origin);
   }
   function sendWhiteboardCommand(name, data) {
     if (whiteboardReady) whiteboardFrame.contentWindow?.postMessage({ drawpadCanvasCommand: true, name, data }, location.origin);
+  }
+  /// 切页前同步拉取当前编辑器的未提交内容（Canvas/白板的 iframe 有 100ms 防抖，直接问它要最新场景）
+  function flushActiveEditorScene() {
+    const page = currentPage();
+    if (!page) return;
+    const push = (raw, validator) => {
+      if (typeof raw !== "string" || raw === lastSceneJSONByPage.get(page.id)) return;
+      if (!validator(raw)) return;
+      lastSceneJSONByPage.set(page.id, raw);
+      page.updatedAt = Date.now();
+      persist();
+      sendServerMessage({ sceneUpdate: { fileID: page.id, elementsJSON: raw } });
+    };
+    if (isCanvas(page) && !canvasFrame.hidden) {
+      const raw = canvasFrame.contentWindow?.__getScene?.();
+      push(raw, (r) => { const v = JSON.parse(r); return v && Array.isArray(v.nodes) && Array.isArray(v.edges); });
+    } else if (isWhiteboard(page) && !whiteboardFrame.hidden) {
+      const raw = whiteboardFrame.contentWindow?.__getScene?.();
+      push(raw, (r) => { const v = JSON.parse(r); return v && Array.isArray(v.pages) && v.pages.length > 0; });
+    }
   }
 
   function makeDefaultState() {
@@ -58,8 +91,10 @@
   }
 
   function loadState() {
+    let raw = null;
     try {
-      const current = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      raw = localStorage.getItem(STORAGE_KEY);
+      const current = JSON.parse(raw || "null");
       if (current && Array.isArray(current.folders) && Array.isArray(current.pages)) {
         return normalizeState(current);
       }
@@ -75,7 +110,13 @@
           expandedFolderIDs: [folderID],
         });
       }
-    } catch (_) {}
+    } catch (error) {
+      // 解析/规范化失败：先备份原始数据再回退默认库，避免随后第一次 persist 把整库覆盖丢失
+      try {
+        if (raw && raw.length > 2) localStorage.setItem(`${STORAGE_KEY}.corrupt`, raw);
+      } catch (_) {}
+      console.error("[DrawPad] 图库数据解析失败，原始数据已备份到 ${STORAGE_KEY}.corrupt", error);
+    }
     return makeDefaultState();
   }
 
@@ -97,6 +138,7 @@
       updatedAt: page.updatedAt || Date.now(),
       fileExtension: page.fileExtension === "canvas" ? "canvas" : (page.fileExtension === "whiteboard" ? "whiteboard" : undefined),
       elements: Array.isArray(page.elements) ? page.elements : [],
+      files: page.files && typeof page.files === "object" && !Array.isArray(page.files) ? page.files : {},
       canvas: page.canvas && typeof page.canvas === "object" && Array.isArray(page.canvas.nodes) && Array.isArray(page.canvas.edges)
         ? page.canvas : emptyCanvas(),
       whiteboard: typeof page.whiteboard === "string" ? page.whiteboard : EMPTY_WHITEBOARD,
@@ -140,7 +182,17 @@
   }
 
   function persist() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    // 写入前保留上一份可用快照，配额不足等异常也不静默丢数据
+    try {
+      const previous = localStorage.getItem(STORAGE_KEY);
+      if (previous && previous.length > 2) localStorage.setItem(`${STORAGE_KEY}.bak`, previous);
+    } catch (_) {}
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (error) {
+      console.error("[DrawPad] 图库保存失败（可能超出 localStorage 配额）", error);
+      updateStatus("保存失败：浏览器存储空间不足");
+    }
   }
 
   function swiftDate(ms) {
@@ -381,8 +433,8 @@
     lastSceneJSONByPage.set(page.id, sceneJSON(page));
     suppressUntil = Date.now() + 300;
     if (canvas) sendCanvasCommand("applyScene", sceneJSON(page));
-    else if (whiteboard) sendWhiteboardCommand("applyScene", sceneJSON(page));
-    else api?.updateScene({ elements: page.elements });
+    else if (whiteboard) sendWhiteboardCommand("__applyScene", sceneJSON(page));
+    else api?.updateScene({ elements: page.elements, files: page.files || {} });
   }
 
   function canvasSize() {
@@ -544,6 +596,8 @@
   function openPage(pageID, notifyIPad) {
     const page = state.pages.find((item) => sameID(item.id, pageID));
     if (!page) return;
+    // 切页前拉取当前编辑器未提交的内容（iframe 内有 100ms 防抖，防止丢最后几笔）
+    flushActiveEditorScene();
     if (!state.openPageIDs.some((id) => sameID(id, page.id))) state.openPageIDs.push(page.id);
     state.currentFolderID = page.folderID;
     state.currentPageID = page.id;
@@ -790,8 +844,10 @@
           if (!incoming || !Array.isArray(incoming.nodes) || !Array.isArray(incoming.edges)) return;
           page.canvas = incoming;
         } else {
-          if (!Array.isArray(incoming)) return;
-          page.elements = incoming;
+          const parsed = parseExcalidrawScene(incoming);
+          if (!parsed) return;
+          page.elements = parsed.elements;
+          page.files = parsed.files;
         }
         page.updatedAt = Date.now();
         lastSceneJSONByPage.set(page.id, message.sceneUpdate.elementsJSON);
@@ -921,6 +977,30 @@
       } catch (_) {}
     }
   });
+  // 兜底：iframe 的 ready 可能在本页监听器注册之前就已发出（缓存加载竞态），导致场景永远不下发。
+  // 轮询同源 iframe 的桥函数，发现已就绪但 ready 标志仍为 false 时直接应用场景。
+  (function ensureEditorBridge() {
+    const deadline = Date.now() + 5000;
+    const tick = () => {
+      const page = currentPage();
+      if (page) {
+        if (isCanvas(page) && !canvasReady && canvasFrame.contentWindow?.__applyScene) {
+          canvasReady = true;
+          applyScene(page);
+          sendCurrentViewport();
+          return;
+        }
+        if (isWhiteboard(page) && !whiteboardReady && whiteboardFrame.contentWindow?.__applyScene) {
+          whiteboardReady = true;
+          applyScene(page);
+          sendCurrentViewport();
+          return;
+        }
+      }
+      if (Date.now() < deadline) setTimeout(tick, 150);
+    };
+    setTimeout(tick, 150);
+  })();
   expandAncestors(state.currentFolderID);
   persist();
   renderTree();
@@ -929,22 +1009,23 @@
     ExcalidrawLib.React.createElement(ExcalidrawLib.Excalidraw, {
       langCode: "zh-CN",
       renderWelcomeScreen: false,
-      initialData: { elements: currentPage()?.elements || [], appState: { viewBackgroundColor: "#ffffff" } },
+      initialData: { elements: currentPage()?.elements || [], files: currentPage()?.files, appState: { viewBackgroundColor: "#ffffff" } },
       onExcalidrawAPI: (value) => {
         api = value;
         applyScene();
         sendCurrentViewport();
       },
-      onChange: (elements, appState) => {
+      onChange: (elements, appState, files) => {
         if (isCanvas(currentPage()) || isWhiteboard(currentPage())) return;
         handleViewportChange(appState);
         if (Date.now() < suppressUntil) return;
         const page = currentPage();
         if (!page) return;
-        const elementsJSON = JSON.stringify(elements);
+        // files 携带图片资源，随场景一起保存与同步，重开/跨端不缺图
+        if (files && typeof files === "object") page.files = files;
+        const elementsJSON = sceneJSON(page);
         if (elementsJSON === lastSceneJSONByPage.get(page.id)) return;
         lastSceneJSONByPage.set(page.id, elementsJSON);
-        page.elements = elements;
         page.updatedAt = Date.now();
         persist();
         sendServerMessage({ sceneUpdate: { fileID: page.id, elementsJSON } });

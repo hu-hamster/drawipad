@@ -316,8 +316,11 @@ final class AIAPI {
                 guard let ids = request.json?["ids"] as? [String], !ids.isEmpty else {
                     return ("400 Bad Request", ["error": "需要 ids 数组"])
                 }
-                model.apiDeleteElements(boardID, ids: ids)
-                return ("200 OK", ["ok": true])
+                let result = model.apiDeleteElements(boardID, ids: ids)
+                if result.success {
+                    return ("200 OK", ["ok": true])
+                }
+                return ("400 Bad Request", ["error": result.payload])
             default:
                 return ("405 Method Not Allowed", ["error": "不支持的方法"])
             }

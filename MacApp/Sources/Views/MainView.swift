@@ -435,26 +435,28 @@ private struct FolderNodeView: View {
         } label: {
             folderHeader
                 .contextMenu {
-                    Button("新建画板") {
-                        expandedFolderIDs.insert(folder.id)
-                        app.addPage(in: folder.id)
+                    Menu("新建") {
+                        Button("子目录") {
+                            expandedFolderIDs.insert(folder.id)
+                            app.addFolder(parentID: folder.id)
+                        }
+                        Button("Canvas") {
+                            expandedFolderIDs.insert(folder.id)
+                            app.addPage(in: folder.id, fileExtension: "canvas")
+                        }
+                        Button("Excalidraw") {
+                            expandedFolderIDs.insert(folder.id)
+                            app.addPage(in: folder.id)
+                        }
+                        Button("白板") {
+                            expandedFolderIDs.insert(folder.id)
+                            app.addPage(in: folder.id, fileExtension: "whiteboard")
+                        }
                     }
-                    Button("新建 Canvas") {
-                        expandedFolderIDs.insert(folder.id)
-                        app.addPage(in: folder.id, fileExtension: "canvas")
-                    }
-                    Button("新建白板") {
-                        expandedFolderIDs.insert(folder.id)
-                        app.addPage(in: folder.id, fileExtension: "whiteboard")
-                    }
-                    Button("新建子目录…") {
-                        expandedFolderIDs.insert(folder.id)
-                        app.addFolder(parentID: folder.id)
-                    }
+                    Divider()
                     Button("重命名目录…") {
                         app.beginRename(.folder(folder.id))
                     }
-                    Divider()
                     Button("删除目录", role: .destructive) {
                         folderPendingDeletion = folder
                     }
@@ -489,21 +491,21 @@ private struct FolderNodeView: View {
             }
 
             Menu {
-                Button("新建画板") {
+                Button("子目录") {
                     expandedFolderIDs.insert(folder.id)
-                    app.addPage(in: folder.id)
+                    app.addFolder(parentID: folder.id)
                 }
-                Button("新建 Canvas") {
+                Button("Canvas") {
                     expandedFolderIDs.insert(folder.id)
                     app.addPage(in: folder.id, fileExtension: "canvas")
                 }
-                Button("新建白板") {
+                Button("Excalidraw") {
+                    expandedFolderIDs.insert(folder.id)
+                    app.addPage(in: folder.id)
+                }
+                Button("白板") {
                     expandedFolderIDs.insert(folder.id)
                     app.addPage(in: folder.id, fileExtension: "whiteboard")
-                }
-                Button("新建子目录") {
-                    expandedFolderIDs.insert(folder.id)
-                    app.addFolder(parentID: folder.id)
                 }
             } label: {
                 Image(systemName: "plus")

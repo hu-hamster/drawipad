@@ -137,9 +137,17 @@
           original.apply(null, arguments);
         };
       });
-      window.onerror = function (msg, src, line, col) {
-        post("bridgeError", "onerror: " + msg + " @ " + (src || "?") + ":" + line + ":" + col);
-      };
+    window.onerror = function (msg, src, line, col) {
+      post("bridgeError", "onerror: " + msg + " @ " + (src || "?") + ":" + line + ":" + col);
+    };
+    // 黑匣子：页面内留下错误现场，便于宿主/调试读取
+    window.__dpadFatal = [];
+    window.addEventListener("error", function (e) {
+      window.__dpadFatal.push("E: " + e.message + " @" + String(e.filename || "").split("/").pop() + ":" + e.lineno + ":" + e.colno);
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+      window.__dpadFatal.push("R: " + String((e.reason && e.reason.message) || e.reason).slice(0, 400));
+    });
       window.addEventListener("unhandledrejection", function (e) {
         post("bridgeError", "rejection: " + e.reason);
       });
@@ -166,6 +174,19 @@
       // 视口同步状态（语义与 index.html 一致）
       var viewportSuppressUntil = 0;
       var lastSentViewport = null;
+
+      // 双通道发送：WKWebView 用 messageHandlers；浏览器 iframe 用 postMessage
+      function post(name, data) {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
+          window.webkit.messageHandlers[name].postMessage(data);
+          return;
+        }
+        try {
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ drawpadCanvas: true, name: name, data: data }, "*");
+          }
+        } catch (e) {}
+      }
 
       function normalizeDoc(parsed) {
         if (!parsed || !Array.isArray(parsed.pages) || parsed.pages.length === 0) return null;

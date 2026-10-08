@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   ReactFlow, Background, BackgroundVariant, Controls, Handle, MarkerType,
@@ -15,6 +16,8 @@ const COLORS = [
 ];
 const COLOR_MAP = Object.fromEntries(COLORS.map(([key, fill, stroke]) => [key, { fill, stroke }]));
 const SIDES = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
+// 支持按下-拖拽-松开绘制的形状工具
+const CREATING = ["text", "rect", "ellipse", "diamond", "group", "link", "file"];
 const EMPTY = { nodes: [], edges: [] };
 const uid = () => globalThis.crypto?.randomUUID?.() || Math.random().toString(16).slice(2);
 const round = (value) => Math.round(Number(value) || 0);
@@ -33,11 +36,12 @@ function post(name, data) {
 }
 
 function toFlowNode(raw, index) {
+  const isDraw = raw.type === "draw";
   return {
     id: raw.id,
     type: "canvasNode",
     position: { x: Number(raw.x) || 0, y: Number(raw.y) || 0 },
-    style: { width: Math.max(72, Number(raw.width) || 220), height: Math.max(48, Number(raw.height) || 120) },
+    style: { width: Math.max(isDraw ? 8 : 72, Number(raw.width) || 220), height: Math.max(isDraw ? 8 : 48, Number(raw.height) || 120) },
     data: { raw },
     zIndex: index,
   };
@@ -61,9 +65,21 @@ function toFlowEdge(raw) {
   };
 }
 
+function pathD(points, offsetX = 0, offsetY = 0) {
+  return points.map(([x, y], index) => `${index ? "L" : "M"}${round(x + offsetX)} ${round(y + offsetY)}`).join(" ");
+}
+
 const CanvasNode = memo(function CanvasNode({ id, data, selected }) {
   const { raw, editing, updateText, finishEdit, beginResize, finishResize } = data;
   const palette = colorOf(raw.color);
+  if (raw.type === "draw") {
+    return <div className={`canvas-node draw ${selected ? "selected" : ""}`}>
+      <svg className="draw-svg" viewBox={`0 0 ${Math.max(1, raw.width)} ${Math.max(1, raw.height)}`} preserveAspectRatio="none">
+        <path d={pathD(raw.points || [])} stroke={palette.stroke} strokeWidth={3.2} fill="none"
+          strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>;
+  }
   const shape = raw.type === "group" ? "group" : raw.shape || "rect";
   const field = raw.type === "group" ? "label" : raw.type === "link" ? "url" : "text";
   const content = raw.type === "file" ? raw.file : raw[field];
@@ -90,9 +106,21 @@ function App() {
   const [color, setColor] = useState("5");
   const [editingId, setEditingId] = useState(null);
   const [selectedEdge, setSelectedEdge] = useState(null);
-  const [edgeLabel, setEdgeLabel] = useState("");
   const [ready, setReady] = useState(false);
   const [connectFrom, setConnectFrom] = useState(null);
+  // 拖拽绘制草稿（fx/fy = 画布坐标，sx/sy = 屏幕坐标用于预览）
+  const [draft, setDraft] = useState(null);
+  // 画笔正在进行的笔画
+  const [stroke, setStroke] = useState(null);
+  // 连线工具的拖拽预连接（fromId + 屏幕坐标预览线）
+  const [connectDrag, setConnectDrag] = useState(null);
+  // 连线文字的内联编辑（输入框直接出现在线中间）
+  const [editingEdge, setEditingEdge] = useState(null);
+  const [edgeEditValue, setEdgeEditValue] = useState("");
+  const edgeEditRef = useRef(null);
+  // 连线快捷组：Portal 到 body，避免被工具栏的 overflow 裁剪
+  const arrowSlotRef = useRef(null);
+  const [flyoutPos, setFlyoutPos] = useState(null);
   const scene = useRef({ ...EMPTY });
   const instance = useRef(null);
   const root = useRef(null);
@@ -198,11 +226,13 @@ function App() {
     const toSide = horizontal ? (dx >= 0 ? "left" : "right") : (dy >= 0 ? "top" : "bottom");
     onConnect({ source: fromID, target: toID, sourceHandle: `source-${fromSide}`, targetHandle: `target-${toSide}` });
   }
-  function addNode(kind, point) {
+  function addNode(kind, point, size) {
     remember();
     const group = kind === "group";
     const raw = { id: uid(), type: group ? "group" : kind === "link" ? "link" : kind === "file" ? "file" : "text",
-      x: round(point.x), y: round(point.y), width: group ? 380 : 220, height: group ? 240 : 120,
+      x: round(point.x), y: round(point.y),
+      width: size ? round(size.width) : (group ? 380 : 220),
+      height: size ? round(size.height) : (group ? 240 : 120),
       ...(group ? { label: "分组" } : kind === "link" ? { url: "https://" } : kind === "file" ? { file: "" } : { text: "" }),
       ...(kind === "rect" || kind === "ellipse" || kind === "diamond" ? { shape: kind } : {}),
       color };
@@ -211,6 +241,165 @@ function App() {
     setTool("select");
     if (!group && kind !== "file") setEditingId(raw.id);
     emit();
+  }
+  // 画笔落笔：一次笔画 = 一个 draw 节点（可整体选中/移动/擦除）
+  function addStroke(points) {
+    if (!points || points.length < 2) return;
+    remember();
+    const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+    const x = round(Math.min(...xs)), y = round(Math.min(...ys));
+    const w = Math.max(4, round(Math.max(...xs) - x)), h = Math.max(4, round(Math.max(...ys) - y));
+    const raw = { id: uid(), type: "draw", x, y, width: w, height: h,
+      points: points.map(([px, py]) => [round(px - x), round(py - y)]), color };
+    scene.current = { ...scene.current, nodes: [...scene.current.nodes, raw] };
+    setNodes(scene.current.nodes.map(toFlowNode));
+    emit();
+  }
+  function eraseNode(id) {
+    remember();
+    scene.current = { nodes: scene.current.nodes.filter((node) => node.id !== id),
+      edges: scene.current.edges.filter((edge) => edge.fromNode !== id && edge.toNode !== id) };
+    setNodes(scene.current.nodes.map(toFlowNode));
+    setEdges(scene.current.edges.map(toFlowEdge));
+    setSelectedEdge(null);
+    emit();
+  }
+  function eraseEdge(id) {
+    remember();
+    scene.current = { ...scene.current, edges: scene.current.edges.filter((edge) => edge.id !== id) };
+    setEdges(scene.current.edges.map(toFlowEdge));
+    setSelectedEdge(null);
+    emit();
+  }
+  // ---- 拖拽绘制 / 画笔的指针处理（挂在编辑器容器上）----
+  function toFlow(clientX, clientY) {
+    return instance.current?.screenToFlowPosition({ x: clientX, y: clientY }) || { x: 0, y: 0 };
+  }
+  function editorPoint(event) {
+    const rect = root.current?.getBoundingClientRect();
+    return { x: event.clientX - (rect?.left || 0), y: event.clientY - (rect?.top || 0) };
+  }
+  function onEditorPointerDown(event) {
+    if (event.button !== 0) return;
+    if (tool === "pen") {
+      const overlay = event.target.closest(".pen-overlay");
+      if (!overlay) return;
+      event.preventDefault();
+      const f = toFlow(event.clientX, event.clientY);
+      const s = editorPoint(event);
+      setStroke({ pts: [[f.x, f.y]], screen: [[s.x, s.y]] });
+      try { overlay.setPointerCapture(event.pointerId); } catch (e) {}
+      return;
+    }
+    if (tool === "arrow") {
+      // 从节点上按住拖拽发起连线
+      const nodeEl = event.target.closest(".react-flow__node");
+      if (!nodeEl?.dataset.id) return;
+      event.preventDefault();
+      const s = editorPoint(event);
+      setConnectDrag({ fromId: nodeEl.dataset.id, sx: s.x, sy: s.y, cx: s.x, cy: s.y });
+      try { nodeEl.setPointerCapture(event.pointerId); } catch (e) {}
+      return;
+    }
+    if (!CREATING.includes(tool)) return;
+    // 仅在空白画布上起笔；工具栏/节点/连线不参与
+    if (!event.target.closest(".react-flow__pane")) return;
+    event.preventDefault();
+    const f = toFlow(event.clientX, event.clientY);
+    const s = editorPoint(event);
+    setDraft({ fx0: f.x, fy0: f.y, fx1: f.x, fy1: f.y, sx0: s.x, sy0: s.y, sx1: s.x, sy1: s.y });
+    try { event.target.setPointerCapture(event.pointerId); } catch (e) {}
+  }
+  function onEditorPointerMove(event) {
+    if (connectDrag) {
+      const s = editorPoint(event);
+      setConnectDrag((old) => old ? { ...old, cx: s.x, cy: s.y } : old);
+    } else if (draft) {
+      const f = toFlow(event.clientX, event.clientY);
+      const s = editorPoint(event);
+      setDraft((old) => old ? { ...old, fx1: f.x, fy1: f.y, sx1: s.x, sy1: s.y } : old);
+    } else if (stroke) {
+      const f = toFlow(event.clientX, event.clientY);
+      const s = editorPoint(event);
+      setStroke((old) => {
+        if (!old) return old;
+        const last = old.screen[old.screen.length - 1];
+        if (Math.hypot(s.x - last[0], s.y - last[1]) < 2.5) return old;
+        return { pts: [...old.pts, [f.x, f.y]], screen: [...old.screen, [s.x, s.y]] };
+      });
+    } else if (tool === "select") {
+      // 近距捕获：指针离某条线 26px 内即高亮，为点击选中提供对称命中带
+      setHoverEdge(nearestEdgeElement(event, 26));
+    }
+  }
+  function onEditorPointerUp(event) {
+    if (connectDrag) {
+      const drag = connectDrag;
+      setConnectDrag(null);
+      // 拖动距离足够才视为拖拽连线；轻微移动交给原点击逻辑处理
+      if (Math.hypot(drag.cx - drag.sx, drag.cy - drag.sy) >= 10) {
+        const hit = docElementFromPoint(event)?.closest(".react-flow__node");
+        const targetId = hit?.dataset.id;
+        if (targetId && targetId !== drag.fromId) {
+          connectClickedNodes(drag.fromId, targetId);
+          setTool("select");
+          setConnectFrom(null);
+        }
+      }
+      return;
+    }
+    if (stroke) {
+      const pts = stroke.pts;
+      setStroke(null);
+      addStroke(pts);
+      return;
+    }
+    if (draft) {
+      const { fx0, fy0, fx1, fy1 } = draft;
+      setDraft(null);
+      const w = Math.abs(fx1 - fx0), h = Math.abs(fy1 - fy0);
+      if (w >= 14 || h >= 14) {
+        addNode(tool, { x: Math.min(fx0, fx1), y: Math.min(fy0, fy1) },
+          { width: Math.max(w, 60), height: Math.max(h, 36) });
+      } else {
+        addNode(tool, { x: fx0, y: fy0 }); // 点按 → 默认尺寸
+      }
+    }
+  }
+  // 指针捕获下 event.target 不会变，需要按坐标做命中测试
+  function docElementFromPoint(event) {
+    const doc = event.target?.ownerDocument;
+    if (!doc) return null;
+    return doc.elementFromPoint(event.clientX, event.clientY);
+  }
+  // ---- 近距捕获连线：按到线段的几何距离做对称命中带（26px），不受 SVG 容器裁剪影响 ----
+  const hoverEdgeRef = useRef(null);
+  function setHoverEdge(el) {
+    if (hoverEdgeRef.current === el) return;
+    hoverEdgeRef.current?.classList?.remove("hover-near");
+    hoverEdgeRef.current = el || null;
+    el?.classList?.add("hover-near");
+  }
+  function nearestEdgeElement(event, threshold) {
+    const doc = event.target?.ownerDocument;
+    if (!doc?.querySelectorAll) return null;
+    let best = null;
+    let bestDistance = threshold;
+    for (const path of doc.querySelectorAll(".react-flow__edge-path")) {
+      const ctm = path.getScreenCTM?.();
+      const total = path.getTotalLength?.();
+      if (!ctm || !total) continue;
+      const steps = Math.min(50, Math.max(10, Math.round(total / 15)));
+      for (let i = 0; i <= steps; i++) {
+        const point = path.getPointAtLength(total * i / steps).matrixTransform(ctm);
+        const distance = Math.hypot(point.x - event.clientX, point.y - event.clientY);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = path.closest(".react-flow__edge");
+        }
+      }
+    }
+    return best;
   }
   function changeColor(value) {
     setColor(value);
@@ -253,6 +442,32 @@ function App() {
       ? { ...node, x: node.x + dx, y: node.y + dy } : node) };
     setNodes(scene.current.nodes.map(toFlowNode));
     emit();
+  }
+  // ---- 选中连线的快捷操作（工具栏 T / ≋ / ⇄ 共用）----
+  const activeEdgeRaw = edges.find((edge) => edge.id === selectedEdge)?.data?.raw;
+  function patchSelectedEdge(patch) {
+    if (!selectedEdge) return;
+    scene.current = { ...scene.current, edges: scene.current.edges.map((edge) => edge.id === selectedEdge ? { ...edge, ...patch(edge) } : edge) };
+    setEdges(scene.current.edges.map(toFlowEdge));
+    emit();
+  }
+  function toggleEdgeAnimated() {
+    if (!activeEdgeRaw) return;
+    remember();
+    patchSelectedEdge((edge) => ({ animated: !edge.animated }));
+  }
+  function toggleEdgeBidirectional() {
+    if (!activeEdgeRaw) return;
+    remember();
+    patchSelectedEdge((edge) => ({ fromEnd: edge.fromEnd === "arrow" ? undefined : "arrow" }));
+  }
+  function beginEdgeLabelEdit(edgeId) {
+    const target = edgeId || selectedEdge;
+    if (!target) return;
+    remember();
+    setEdgeEditValue(scene.current.edges.find((edge) => edge.id === target)?.label || "");
+    setSelectedEdge(target);
+    setEditingEdge(target);
   }
   function removeSelection() {
     const ids = nodes.filter((node) => node.selected).map((node) => node.id);
@@ -321,17 +536,96 @@ function App() {
     return () => { window.removeEventListener("message", onMessage); clearTimeout(emitTimer.current); };
   }, []);
   useEffect(() => { if (ready) post("ready", { version: 2 }); }, [ready]);
+  // 内联连线文字：定位到线中间并跟随视口移动。
+  // 编辑区本身完全透明（只承载光标），实时 patch 让画布上的真实标签即时显示文字——
+  // 纯 Excalidraw 式所见即所得；注意 React 合成 onChange 在此构建不可靠，用原生 input 驱动。
+  useEffect(() => {
+    if (!editingEdge) return;
+    const input = edgeEditRef.current;
+    const edgeEl = root.current?.querySelector(`.react-flow__edge[data-id="${editingEdge}"]`);
+    const reposition = () => {
+      if (!input || !edgeEl || !root.current) return;
+      const base = root.current.getBoundingClientRect();
+      const zoom = instance.current?.getViewport?.()?.zoom || 1;
+      // 首选：直接对齐真实标签元素的矩形中心（所见即所得）；
+      // 标签为空时回退：路径中点上移约 8px*zoom（标签 translateY(-10px) 后的视觉中心）
+      let cx, cy;
+      const label = edgeEl.querySelector(".react-flow__edge-text");
+      if (label) {
+        const r = label.getBoundingClientRect();
+        cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+      } else {
+        const path = edgeEl.querySelector(".react-flow__edge-path");
+        const m = path?.getScreenCTM?.();
+        if (path && m) {
+          const p = path.getPointAtLength(path.getTotalLength() / 2);
+          const anchor = new DOMPoint(p.x, p.y).matrixTransform(m);
+          cx = anchor.x; cy = anchor.y - 8 * m.a;
+        } else {
+          const r = edgeEl.getBoundingClientRect();
+          cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+        }
+      }
+      input.style.left = (cx - base.left) + "px";
+      input.style.top = (cy - base.top) + "px";
+      input.style.fontSize = (10 * zoom).toFixed(1) + "px";
+    };
+    if (input && edgeEl) {
+      reposition();
+      input.textContent = edgeEditValue;
+      input.oninput = () => patchSelectedEdge(() => ({ label: input.textContent.replace(/\n/g, "") }));
+    }
+    if (input) {
+      input.focus();
+      const doc = input.ownerDocument;
+      const range = doc.createRange();
+      range.selectNodeContents(input);
+      const selection = doc.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    // 平移/缩放画布时编辑区跟随连线：逐帧跟随（rAF），
+    // 不依赖 React Flow 实例事件（v12 的 on() 在此构建不可用，之前订阅静默失败导致光标飘走）
+    const offMove = instance.current?.on?.("move", reposition);
+    const offZoom = instance.current?.on?.("zoom", reposition);
+    let raf = 0;
+    const follow = () => { reposition(); raf = requestAnimationFrame(follow); };
+    raf = requestAnimationFrame(follow);
+    return () => {
+      cancelAnimationFrame(raf);
+      offMove?.();
+      offZoom?.();
+      if (input) input.oninput = null;
+    };
+  }, [editingEdge]);
+  // 连线快捷组跟随「连线 ↗」按钮定位（viewport 坐标，Portal 渲染）
+  useEffect(() => {
+    if (!selectedEdge) { setFlyoutPos(null); return; }
+    const locate = () => {
+      const slot = arrowSlotRef.current;
+      if (!slot) return;
+      const rect = slot.getBoundingClientRect();
+      setFlyoutPos({ left: rect.right + 10, top: rect.top + rect.height / 2 });
+    };
+    locate();
+    window.addEventListener("resize", locate);
+    return () => window.removeEventListener("resize", locate);
+  }, [selectedEdge]);
   useEffect(() => {
     const onKey = (event) => {
-      const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+      // 输入状态（含连线文字的 contenteditable 编辑区）：退格/删除等交给输入本身，
+      // 不能被"删除元素"快捷键拦截，否则标签文字只能加不能删
+      const active = document.activeElement;
+      const typing = !!active && (["INPUT", "TEXTAREA"].includes(active.tagName) || active.isContentEditable);
       if (typing) return;
       const key = event.key.toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "z") {
         event.preventDefault(); history(event.shiftKey ? "redo" : "undo"); return;
       }
+      if (key === "escape") { setTool("select"); setConnectFrom(null); setSelectedEdge(null); return; }
       if (key === "delete" || key === "backspace") { event.preventDefault(); removeSelection(); return; }
-      if (!event.metaKey && !event.ctrlKey && { v: 1, t: 1, r: 1, o: 1, d: 1, g: 1, a: 1 }[key]) {
-        setTool({ v: "select", t: "text", r: "rect", o: "ellipse", d: "diamond", g: "group", a: "arrow" }[key]);
+      if (!event.metaKey && !event.ctrlKey && { v: 1, t: 1, r: 1, o: 1, d: 1, g: 1, a: 1, p: 1, e: 1 }[key]) {
+        setTool({ v: "select", t: "text", r: "rect", o: "ellipse", d: "diamond", g: "group", a: "arrow", p: "pen", e: "eraser" }[key]);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -339,7 +633,8 @@ function App() {
   });
   useEffect(() => {
     const onPaste = (event) => {
-      if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+      const active = document.activeElement;
+      if (active && (["INPUT", "TEXTAREA"].includes(active.tagName) || active.isContentEditable)) return;
       const item = [...(event.clipboardData?.items || [])].find((entry) => entry.type.startsWith("image/"));
       if (!item) return;
       event.preventDefault();
@@ -371,36 +666,79 @@ function App() {
       emit();
     },
   } })), [nodes, editingId]);
-  return <div id="editor" ref={root}>
+  return <div id="editor" ref={root}
+    className={tool === "eraser" ? "eraser-mode" : (tool === "arrow" ? "arrow-mode" : undefined)}
+    onPointerDown={onEditorPointerDown} onPointerMove={onEditorPointerMove}
+    onPointerUp={onEditorPointerUp} onPointerCancel={onEditorPointerUp}>
     <ReactFlow nodes={renderedNodes} edges={edges} nodeTypes={NODE_TYPES}
+      onError={(code, message) => console.error("RF onError", code, message)}
       onInit={(api) => { instance.current = api; setReady(true); }}
       onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
       onNodeDragStart={startNodeDrag} onNodeDragStop={stopNodeDrag}
       onNodeClick={(_, node) => {
+        if (tool === "eraser") { eraseNode(node.id); return; }
         if (tool !== "arrow") return;
         if (!connectFrom) setConnectFrom(node.id);
         else { connectClickedNodes(connectFrom, node.id); setConnectFrom(null); setTool("select"); }
       }}
       onNodeDoubleClick={(_, node) => { if (node.data.raw.type !== "file") { remember(); setEditingId(node.id); } }}
-      onEdgeClick={(_, edge) => { setSelectedEdge(edge.id); setEdgeLabel(scene.current.edges.find((item) => item.id === edge.id)?.label || ""); }}
+      onEdgeClick={(_, edge) => {
+        if (tool === "eraser") { eraseEdge(edge.id); return; }
+        setSelectedEdge(edge.id);
+      }}
+      onEdgeDoubleClick={(_, edge) => {
+        if (tool === "eraser") return;
+        beginEdgeLabelEdit(edge.id);
+      }}
       onPaneClick={(event) => {
+        const near = nearestEdgeElement(event, 26);
+        if (near?.dataset?.id) {
+          setConnectFrom(null);
+          // 双击线附近：与 Excalidraw 一致，直接进入线的文字编辑；单击则只选中
+          if (event.detail === 2 && tool !== "eraser") beginEdgeLabelEdit(near.dataset.id);
+          else setSelectedEdge(near.dataset.id);
+          return;
+        }
+        setHoverEdge(null);
         setSelectedEdge(null);
         setConnectFrom(null);
-        const kind = tool === "select" && event.detail === 2 ? "text" : tool;
-        if (kind !== "select" && kind !== "arrow") addNode(kind, instance.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        if (tool === "select" && event.detail === 2) {
+          addNode("text", instance.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        }
       }}
       onMoveEnd={publishViewport} deleteKeyCode={null} minZoom={0.2} maxZoom={4}
-      panOnDrag={[0, 1, 2]} panOnScroll zoomOnScroll={false} zoomOnPinch zoomOnDoubleClick={false}
+      panOnDrag={CREATING.includes(tool) ? false : [0, 1, 2]} panOnScroll zoomOnScroll={false} zoomOnPinch zoomOnDoubleClick={false}
       fitView={false} connectionRadius={24} defaultViewport={{ x: 40, y: 40, zoom: 1 }}
-      nodesConnectable nodesDraggable elementsSelectable>
+      nodesConnectable nodesDraggable={tool !== "arrow"} elementsSelectable>
       <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="#ccd4e0" />
       <Controls showInteractive={false} position="bottom-right" />
     </ReactFlow>
+    {tool === "pen" && <div className="pen-overlay">
+      {stroke && <svg className="stroke-preview">
+        <path d={pathD(stroke.screen)} stroke={colorOf(color).stroke} strokeWidth={3.2} fill="none"
+          strokeLinecap="round" strokeLinejoin="round" />
+      </svg>}
+    </div>}
+    {draft && <div className="draft-preview" style={{
+      left: Math.min(draft.sx0, draft.sx1), top: Math.min(draft.sy0, draft.sy1),
+      width: Math.abs(draft.sx1 - draft.sx0), height: Math.abs(draft.sy1 - draft.sy0),
+      borderColor: colorOf(color).stroke }} />}
+    {connectDrag && <svg className="connect-preview">
+      <defs><marker id="dpad-arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+        <path d="M0,0 L8,4.5 L0,9 z" fill="#6965db" /></marker></defs>
+      <line x1={connectDrag.sx} y1={connectDrag.sy} x2={connectDrag.cx} y2={connectDrag.cy}
+        stroke="#6965db" strokeWidth={2.4} strokeDasharray="6 5" markerEnd="url(#dpad-arrow)" />
+    </svg>}
     <div className="canvas-tools" role="toolbar" aria-label="Canvas 工具">
       {[["select", "↖", "选择 V"], ["text", "T", "文本 T"], ["rect", "▢", "矩形 R"],
         ["ellipse", "◯", "椭圆 O"], ["diamond", "◇", "菱形 D"], ["group", "▣", "分组 G"],
-        ["link", "🔗", "链接"], ["file", "▤", "文件"], ["arrow", "↗", "连线 A"]].map(([name, icon, title]) =>
+        ["pen", "✎", "画笔 P"], ["eraser", "⌫", "橡皮擦 E"], ["link", "🔗", "链接"],
+        ["file", "▤", "文件"]].map(([name, icon, title]) =>
         <button key={name} type="button" title={title} aria-label={title} className={tool === name ? "active" : ""} onClick={() => { setTool(name); setConnectFrom(null); }}>{icon}</button>)}
+      <span className="arrow-slot" ref={arrowSlotRef}>
+        <button type="button" title="连线 A" aria-label="连线 A" className={tool === "arrow" ? "active" : ""}
+          onClick={() => { setTool("arrow"); setConnectFrom(null); }}>↗</button>
+      </span>
       <span className="tool-divider" />
       <button type="button" title="撤销" onClick={() => history("undo")}>↶</button>
       <button type="button" title="重做" onClick={() => history("redo")}>↷</button>
@@ -410,16 +748,33 @@ function App() {
       {COLORS.map(([key, fill]) => <button key={key} type="button" title={`颜色 ${key}`} className={color === key ? "active" : ""}
         style={{ background: fill }} onClick={() => changeColor(key)} />)}
     </div>
-    {selectedEdge && <label className="edge-editor">连线文字
-      <input value={edgeLabel} onFocus={remember} onChange={(event) => {
-        const value = event.target.value;
-        setEdgeLabel(value);
-        scene.current = { ...scene.current, edges: scene.current.edges.map((edge) => edge.id === selectedEdge ? { ...edge, label: value } : edge) };
-        setEdges(scene.current.edges.map(toFlowEdge));
-        emit();
-      }} />
-    </label>}
-    <div className="canvas-hint">{connectFrom ? "再点击一个节点完成连线" : "双击空白处新建文本 · 拖动节点边缘连线 · 拖动画布平移 · Shift 拖动框选"}</div>
+    {selectedEdge && flyoutPos && createPortal(
+      <span className="edge-flyout" role="group" aria-label="选中连线操作"
+        style={{ left: flyoutPos.left, top: flyoutPos.top }}>
+        <button type="button" title="连线添加文字" onClick={beginEdgeLabelEdit}>T</button>
+        <button type="button" title="连线开/关流动" className={activeEdgeRaw?.animated ? "on" : ""} onClick={toggleEdgeAnimated}>≋</button>
+        <button type="button" title="连线开/关双向箭头" className={activeEdgeRaw?.fromEnd === "arrow" ? "on" : ""} onClick={toggleEdgeBidirectional}>⇄</button>
+      </span>, document.body)}
+    {editingEdge && <div ref={edgeEditRef} className="edge-inline-edit" contentEditable suppressContentEditableWarning
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault(); // 连线标签不换行，Enter 即提交
+          patchSelectedEdge(() => ({ label: edgeEditRef.current?.textContent ?? "" }));
+          setEditingEdge(null);
+        } else if (event.key === "Escape") {
+          patchSelectedEdge(() => ({ label: edgeEditValue }));
+          setEditingEdge(null);
+        }
+      }}
+      onBlur={() => {
+        if (edgeEditRef.current) patchSelectedEdge(() => ({ label: edgeEditRef.current.textContent }));
+        setEditingEdge(null);
+      }} />}
+    <div className="canvas-hint">{connectFrom ? "再点击一个节点完成连线"
+      : tool === "pen" ? "画笔：在画布上拖动书写，一笔一个元素；按 ↖ 退出"
+      : tool === "eraser" ? "橡皮擦：点击要删除的元素（整条笔画/节点/连线）"
+      : tool === "arrow" ? "连线：从节点按住拖到目标节点松开（也可依次点击两个节点）"
+      : "双击空白新建文本 · 选形状后按住拖拽绘制 · ✎ 画笔 · ⌫ 橡皮擦 · 拖节点边缘连线"}</div>
   </div>;
 }
 

@@ -150,8 +150,10 @@ final class MacAppModel: ObservableObject {
     func handleLocalSceneChange(_ json: String, from view: any BoardSurface) {
         guard webView === view, webViewReady,
               let id = selectedPageID, webViewPageID == id else { return }
-        // 初始化期画布会多次自报空场景，直接忽略，防止清空已有内容
-        if json == "[]" || json == PageMeta.emptyWhiteboard {
+        // 初始化期画布会多次自报空场景，直接忽略，防止清空已有内容。
+        // 注意：空白板文档不在忽略之列——用户清空内容到只剩空页时必须能保存；
+        // 白板编辑器自身已用 lastRemoteJSON 抑制初始化回声，这里无需重复拦截。
+        if json == "[]" {
             BoardWebViewMessageProxy.diag("忽略本端空场景广播（初始化噪声）")
             return
         }
@@ -696,14 +698,56 @@ final class MacAppModel: ObservableObject {
     }
     // MARK: - AI API 支持（AIAPI 调用，全部主线程）
 
+    /// AI 场景接口只支持 Excalidraw 画板；Canvas/白板的文档结构不同，
+    /// 按数组解析会把原文档当空数据处理后整体覆盖，必须直接拒绝。
+    private func aiBoardTypeError(_ boardID: UUID) -> String? {
+        guard let meta = store.pageMeta(boardID) else { return "画板不存在" }
+        if meta.isCanvas { return "Canvas 画板暂不支持 AI 元素操作" }
+        if meta.isWhiteboard { return "白板暂不支持 AI 元素操作" }
+        return nil
+    }
+
+    /// 解析 Excalidraw 场景（兼容旧数组格式与新 {elements, files} 格式），失败返回 nil。
+    private func excalidrawSceneParts(_ json: String) -> (elements: [[String: Any]], files: [String: Any])? {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        if let arr = obj as? [Any] {
+            return ((arr as? [[String: Any]]) ?? [], [:])
+        }
+        if let dict = obj as? [String: Any],
+           let elements = dict["elements"] as? [[String: Any]] {
+            return (elements, (dict["files"] as? [String: Any]) ?? [:])
+        }
+        return nil
+    }
+
+    /// 把元素与图片资源序列化成场景 JSON。
+    private func excalidrawSceneJSON(elements: [[String: Any]], files: [String: Any]) -> String? {
+        var payload: [String: Any] = ["elements": elements]
+        if !files.isEmpty { payload["files"] = files }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// 整体替换画板场景：落盘 + 画布应用 + iPad 同步。
     func apiSetScene(_ boardID: UUID, elementsJSON: String) {
+        if let error = aiBoardTypeError(boardID) {
+            print("[DrawPad] apiSetScene 拒绝: \(error)")
+            return
+        }
         guard (try? JSONSerialization.jsonObject(with: Data(elementsJSON.utf8))) is [Any] else { return }
-        store.forceWriteScene(elementsJSON, for: boardID)
+        // AI 只操作元素；保留原有图片资源，避免整场景替换时丢图
+        var outgoing = elementsJSON
+        if let existing = store.sceneJSON(boardID),
+           let parts = excalidrawSceneParts(existing), !parts.files.isEmpty,
+           let merged = excalidrawSceneJSON(elements: (try? JSONSerialization.jsonObject(with: Data(elementsJSON.utf8))) as? [[String: Any]] ?? [], files: parts.files) {
+            outgoing = merged
+        }
+        store.forceWriteScene(outgoing, for: boardID)
         if boardID == selectedPageID {
-            webView?.applyScene(elementsJSON)
+            webView?.applyScene(outgoing)
             if server.hasClient {
-                server.send(.sceneUpdate(fileID: boardID, elementsJSON: elementsJSON))
+                server.send(.sceneUpdate(fileID: boardID, elementsJSON: outgoing))
             }
         }
         pushLibrary()
@@ -711,40 +755,58 @@ final class MacAppModel: ObservableObject {
 
     /// 追加元素（支持简写展开，from/to 可引用现有元素）。
     func apiAppendElements(_ boardID: UUID, items: [[String: Any]]) -> (success: Bool, payload: String) {
-        let current = (store.sceneJSON(boardID) ?? "[]").data(using: .utf8)
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
-        guard let expanded = AIElementShorthand.expand(items, existing: current) else {
+        if let error = aiBoardTypeError(boardID) {
+            return (false, error)
+        }
+        guard let parts = excalidrawSceneParts(store.sceneJSON(boardID) ?? "[]") else {
+            return (false, "画板场景数据无效")
+        }
+        guard let expanded = AIElementShorthand.expand(items, existing: parts.elements) else {
             return (false, "元素展开失败（检查 type 与必填字段）")
         }
-        let merged = current + expanded.elements
-        guard let data = try? JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys]),
-              let json = String(data: data, encoding: .utf8)
-        else {
+        let merged = parts.elements + expanded.elements
+        guard let json = excalidrawSceneJSON(elements: merged, files: parts.files) else {
             return (false, "序列化失败")
         }
-        apiSetScene(boardID, elementsJSON: json)
+        store.forceWriteScene(json, for: boardID)
+        if boardID == selectedPageID {
+            webView?.applyScene(json)
+            if server.hasClient {
+                server.send(.sceneUpdate(fileID: boardID, elementsJSON: json))
+            }
+        }
+        pushLibrary()
         return (true, json)
     }
 
     /// 按 id 删除元素（连带其绑定文本）。
-    func apiDeleteElements(_ boardID: UUID, ids: [String]) {
-        let current = (store.sceneJSON(boardID) ?? "[]").data(using: .utf8)
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
+    func apiDeleteElements(_ boardID: UUID, ids: [String]) -> (success: Bool, payload: String) {
+        if let error = aiBoardTypeError(boardID) {
+            return (false, error)
+        }
+        guard let parts = excalidrawSceneParts(store.sceneJSON(boardID) ?? "[]") else {
+            return (false, "画板场景数据无效")
+        }
+        let current = parts.elements
         let idSet = Set(ids)
-        let removedTextContainers = Set(
-            current.filter { idSet.contains($0["id"] as? String ?? "") }
-                .compactMap { $0["id"] as? String }
-        )
         let filtered = current.filter { element in
             let id = element["id"] as? String ?? ""
             if idSet.contains(id) { return false }
             // 绑定文本跟随容器删除
             if let container = element["containerId"] as? String, idSet.contains(container) { return false }
-            _ = removedTextContainers
             return true
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: filtered, options: [.sortedKeys]),
-              let json = String(data: data, encoding: .utf8) else { return }
-        apiSetScene(boardID, elementsJSON: json)
+        guard let json = excalidrawSceneJSON(elements: filtered, files: parts.files) else {
+            return (false, "序列化失败")
+        }
+        store.forceWriteScene(json, for: boardID)
+        if boardID == selectedPageID {
+            webView?.applyScene(json)
+            if server.hasClient {
+                server.send(.sceneUpdate(fileID: boardID, elementsJSON: json))
+            }
+        }
+        pushLibrary()
+        return (true, json)
     }
 }

@@ -62,7 +62,19 @@ async function serveStatic(request, response) {
 class DrawPadWebBridge {
   #tcp = net.createServer((socket) => this.#handleTCP(socket));
   #http = http.createServer((request, response) => void serveStatic(request, response));
-  #wss = new WebSocketServer({ server: this.#http });
+  #wss = new WebSocketServer({
+    server: this.#http,
+    // 浏览器连接必须同源：拒绝其他网页/跨域脚本接入本地 Bridge
+    verifyClient: (info, callback) => {
+      const { origin, host } = info.req.headers;
+      if (!origin || origin === `http://${host}` || origin === `https://${host}`) {
+        callback(true);
+        return;
+      }
+      console.warn(`DrawPad Web 拒绝跨源 WebSocket: ${origin}`);
+      callback(false, 403, "Forbidden origin");
+    },
+  });
   #bonjour = new Bonjour();
   #bonjourService = null;
   #ipad = null;
@@ -178,6 +190,7 @@ class DrawPadWebBridge {
       return;
     }
     this.#ipad = socket;
+    let handshakeDone = false;
     const decoder = new FrameDecoder();
     this.#sendBrowserStates();
     socket.on("data", (chunk) => {
@@ -193,11 +206,15 @@ class DrawPadWebBridge {
             socket.end();
             return;
           }
+          handshakeDone = true;
           socket.write(frameJSON({ helloAccepted: { serverName: serviceName } }));
           this.#sendToBrowser(this.#browser, {
             type: "ipadConnected",
             deviceName: message.hello.deviceName,
           });
+        } else if (!handshakeDone) {
+          // 握手前只接受 hello；其余消息一律拒绝，避免未配对连接直接修改/删除数据
+          socket.write(frameJSON({ serverError: { message: "请先发送 hello 完成握手" } }));
         } else {
           let routedMessage = message;
           // Swift 编码 UUID 时使用大写字母，浏览器 crypto.randomUUID() 使用小写。

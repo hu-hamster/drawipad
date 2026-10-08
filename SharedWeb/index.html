@@ -105,6 +105,8 @@
       var lastRemoteJSON = null;
       var suppressUntil = 0;
       var sceneVersion = 0;
+      // 图片资源（Excalidraw files）：随场景一起序列化，重开/同步不缺图
+      var lastFiles = {};
       // 视口同步状态
       var viewportSuppressUntil = 0;
       var lastSentViewport = null; // { cx, cy, z, vw, vh }
@@ -130,11 +132,12 @@
           window.__excal = api; // 调试暴露
           post("ready", { version: sceneVersion });
         },
-        onChange: function (elements, appState) {
+        onChange: function (elements, appState, files) {
           var now = Date.now();
+          if (files && typeof files === "object" && Object.keys(files).length) lastFiles = files;
           // --- 元素通道（本端绘制）---
           if (now >= suppressUntil) {
-            var json = JSON.stringify(elements);
+            var json = JSON.stringify({ elements: elements, files: lastFiles });
             if (json !== lastRemoteJSON && !(lastRemoteJSON === null && elements.length === 0)) {
               sceneVersion += 1;
               post("sceneChange", json);
@@ -182,15 +185,26 @@
 
       // ---- Swift → JS 桥 ----
 
-      // 应用对端场景（参数为一次 JSON 编码的元素数组字符串）
+      // 应用对端场景（兼容旧数组格式与新 {elements, files} 格式）
       window.__applyScene = function (encodedJSON) {
         if (!excal) return "not-ready";
         try {
+          var parsed = JSON.parse(encodedJSON);
+          var elements, files;
+          if (Array.isArray(parsed)) {
+            elements = parsed; // 旧格式：纯元素数组
+            files = undefined;
+          } else if (parsed && Array.isArray(parsed.elements)) {
+            elements = parsed.elements;
+            files = parsed.files && typeof parsed.files === "object" ? parsed.files : {};
+            lastFiles = files;
+          } else {
+            return "error:invalid-scene";
+          }
           var wasEmpty = excal.getSceneElements().length === 0;
-          var elements = JSON.parse(encodedJSON);
           lastRemoteJSON = encodedJSON;
           suppressUntil = Date.now() + 120;
-          excal.updateScene({ elements: elements });
+          excal.updateScene(files ? { elements: elements, files: files } : { elements: elements });
           // 空画布首次收到内容：若内容在视口外则居中定位
           if (wasEmpty && elements.length > 0) {
             try { centerToContent(); } catch (e2) {}
@@ -229,10 +243,10 @@
         });
       }
 
-      // 取当前场景（返回 JSON 字符串）
+      // 取当前场景（返回 {elements, files} JSON 字符串）
       window.__getScene = function () {
         if (!excal) return "[]";
-        return JSON.stringify(excal.getSceneElements());
+        return JSON.stringify({ elements: excal.getSceneElements(), files: lastFiles });
       };
 
       // iPad 使用定制竖排工具岛；Mac 不重挂载，保留官方响应式结构。

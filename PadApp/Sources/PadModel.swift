@@ -370,7 +370,8 @@ final class PadModel: ObservableObject {
         else { return }
         // 初始化期画布会多次自报空场景，空内容仍需拦截，避免覆盖远端。
         // 但只要用户已经画出了非空内容，就不能因为初始场景确认回调缺失而丢弃更新。
-        let emptyInitJSON = json == "[]" || json == PageMeta.emptyWhiteboard
+        // 注意：空白板文档不拦截（用户清空到只剩空页时必须能保存；编辑器已自行抑制初始化回声）。
+        let emptyInitJSON = json == "[]"
         if !sceneReadyForEditing && emptyInitJSON {
             return
         }

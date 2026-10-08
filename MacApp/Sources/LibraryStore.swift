@@ -10,6 +10,8 @@ final class LibraryStore: ObservableObject {
     }
 
     @Published private(set) var library = LibraryData()
+    /// 上次加载时发现并备份的损坏索引路径（nil = 无损坏）；UI 可据此提示用户。
+    @Published private(set) var corruptBackupPath: String?
 
     let root: URL
     private var scenesDir: URL { root.appendingPathComponent("scenes", isDirectory: true) }
@@ -33,13 +35,22 @@ final class LibraryStore: ObservableObject {
             bootstrap()
             return
         }
-        if let data = try? Data(contentsOf: libraryURL),
+        let rawData = try? Data(contentsOf: libraryURL)
+        if let data = rawData,
            let decoded = try? JSONDecoder().decode(LibraryData.self, from: data) {
             library = decoded
             library.version = 3
-        } else {
-            bootstrap()
+            return
         }
+        // 索引损坏：先备份原文件再重建，避免目录/命名/对应关系被静默覆盖丢失
+        let stamp = Int(Date().timeIntervalSince1970)
+        let backup = root.appendingPathComponent("library.corrupt-\(stamp).json")
+        if let data = rawData {
+            try? data.write(to: backup, options: .atomic)
+            corruptBackupPath = backup.path
+        }
+        print("[DrawPad] library.json 解析失败，原文件已备份到 \(backup.path)")
+        bootstrap()
     }
 
     private func bootstrap() {
@@ -135,8 +146,10 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// 立即写场景（AI API 用，绕过防抖）。
+    /// 立即写场景（AI API 用，绕过防抖）。同步清掉该页的待写缓存，
+    /// 防止 150ms 后旧的用户编辑内容把刚写入的新场景覆盖回去。
     func forceWriteScene(_ json: String, for pageID: UUID) {
+        pendingSceneSaves.removeValue(forKey: pageID)
         writeScene(json, for: pageID)
         if let index = library.pages.firstIndex(where: { $0.id == pageID }) {
             library.pages[index].updatedAt = Date()
