@@ -347,6 +347,15 @@ final class PadModel: ObservableObject {
         client.send(.fileCreateWhiteboard(folderID: folderID, afterFileID: currentPageID))
     }
 
+    func newMermaid() {
+        let folderID = currentFolderID ?? snapshot.folders.last?.id
+        guard let folderID else {
+            showToast("没有可用项目")
+            return
+        }
+        client.send(.fileCreateMermaid(folderID: folderID, afterFileID: currentPageID))
+    }
+
     func newPage() {
         let folderID = currentFolderID ?? snapshot.folders.last?.id
         guard let folderID else {

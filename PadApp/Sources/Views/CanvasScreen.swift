@@ -48,6 +48,9 @@ struct CanvasScreen: View {
             } else if meta.isWhiteboard {
                 WhiteboardPadScreen(model: model)
                     .id(model.currentPageID)
+            } else if meta.isMermaid {
+                MermaidPadScreen(model: model)
+                    .id(model.currentPageID)
             } else {
                 ExcalidrawPadWebView(model: model)
                     .id(model.currentPageID)
@@ -95,10 +98,11 @@ struct CanvasScreen: View {
                 Button("新建 Excalidraw", action: model.newPage)
                 Button("新建 Canvas", action: model.newCanvas)
                 Button("新建白板", action: model.newWhiteboard)
+                Button("新建 Mermaid", action: model.newMermaid)
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
-            .help("新建画板、Canvas 或白板")
+            .help("新建画板、Canvas、白板或 Mermaid")
 
             Button {
                 confirmDelete = true

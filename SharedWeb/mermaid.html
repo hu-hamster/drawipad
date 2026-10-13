@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>DrawPad Mermaid</title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font: 13px -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+      color: #1b1b1f;
+      background: #f8fafc;
+    }
+    #wrap {
+      display: flex;
+      flex-direction: row;
+      width: 100%;
+      height: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      gap: 8px;
+    }
+    /* 窄屏（iPad 竖屏等）：改为上下分栏 */
+    @media (max-width: 700px) {
+      #wrap { flex-direction: column; }
+      #code-pane { width: auto !important; height: 42%; }
+    }
+    .pane {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      background: #fff;
+      border: 1px solid #dce1e9;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(21, 32, 51, 0.06);
+      overflow: hidden;
+    }
+    #code-pane { width: 42%; }
+    #preview-pane { flex: 1; position: relative; }
+    .pane-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-bottom: 1px solid #eceff4;
+      background: #fbfcfe;
+      flex: none;
+    }
+    .pane-title { font-weight: 600; font-size: 12px; color: #51586a; margin-right: auto; }
+    .mbtn {
+      border: 1px solid #d5dbe5;
+      background: #fff;
+      color: #353b48;
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+    .mbtn:hover { background: #eef4ff; border-color: #b9c8e8; }
+    select.mbtn { padding: 4px 6px; }
+    #code-wrap { flex: 1; display: flex; min-height: 0; position: relative; }
+    #code-gutter {
+      flex: none;
+      width: 36px;
+      box-sizing: border-box;
+      padding: 12px 6px 12px 0;
+      text-align: right;
+      color: #9aa3b2;
+      background: #fbfcfe;
+      border-right: 1px solid #eef1f6;
+      font: 13px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #code {
+      flex: 1;
+      width: 100%;
+      box-sizing: border-box;
+      border: 0;
+      outline: none;
+      resize: none;
+      padding: 12px 14px;
+      font: 13px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      color: #22262e;
+      background: #fff;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+    .line-link { color: #1971c2; cursor: pointer; text-decoration: underline; margin-left: 8px; }
+    /* 飞书风主题：大圆角节点（CSS rx/ry 在 Chromium/WebKit 均生效） */
+    body.theme-feishu #preview .node rect { rx: 8px; ry: 8px; }
+    body.theme-feishu #preview .cluster rect { rx: 10px; ry: 10px; }
+    body.theme-feishu #preview .edgeLabel rect { rx: 4px; ry: 4px; }
+    body.theme-feishu #preview .actor { rx: 8px; ry: 8px; }
+    body.theme-feishu #preview g.classGroup rect { rx: 8px; ry: 8px; }
+    body.theme-feishu #preview .node rect, body.theme-feishu #preview .cluster rect { stroke-width: 1.2px; }
+    #preview {
+      flex: 1;
+      position: relative; /* 覆盖层以此为定位容器，随内容一起滚动 */
+      overflow: auto;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+    #preview > svg { max-width: 100%; height: auto; }
+    /* 图是 flex 子项，缩放时不许被容器压缩回可视宽 */
+    #preview > svg:not(#pen-overlay) { flex: none; }
+    /* 标注覆盖层铺满整个滚动区，不受图的 max-width 约束 */
+    #pen-overlay { max-width: none; height: auto; }
+    #preview .placeholder { color: #98a0af; text-align: center; line-height: 1.9; pointer-events: none; }
+    #preview .placeholder b { color: #6b7382; }
+    #render-error {
+      display: none;
+      flex: none;
+      margin: 0 12px 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #fdecec;
+      border: 1px solid #f3c1c1;
+      color: #a12622;
+      font: 12px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      max-height: 34%;
+      overflow: auto;
+    }
+    /* 标注覆盖层：默认不拦截事件，画笔模式开启后接管触摸 */
+    #pen-overlay {
+      position: absolute;
+      pointer-events: none;
+      overflow: visible;
+      z-index: 2;
+    }
+    #pen-overlay.drawing { pointer-events: auto; touch-action: none; -webkit-user-select: none; user-select: none; cursor: crosshair; }
+    /* 分区分隔条：拖动调整代码区/预览区比例，双击复位，拖到边缘可完全收起 */
+    #split-divider {
+      flex: none;
+      width: 9px;
+      margin: 0 -4px;
+      z-index: 6;
+      cursor: col-resize;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: none;
+      border-radius: 5px;
+    }
+    #split-divider:hover, #split-divider.active { background: #6965db22; }
+    #split-divider .sd-grip {
+      width: 3px; height: 30px;
+      border-radius: 2px;
+      background: #c9d2e0;
+      pointer-events: none;
+    }
+    #split-divider:hover .sd-grip, #split-divider.active .sd-grip { background: #6965db; }
+    @media (max-width: 700px) {
+      #split-divider { width: auto; height: 9px; margin: -4px 0; cursor: row-resize; }
+      #split-divider .sd-grip { width: 30px; height: 3px; }
+    }
+    #pen-bar {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      display: none;
+      align-items: center;
+      gap: 2px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
+      padding: 4px 6px;
+      z-index: 5;
+      touch-action: manipulation;
+    }
+    #pen-bar.show { display: flex; }
+    .pen-btn {
+      border: none;
+      background: transparent;
+      border-radius: 9px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      color: #1b1b1f;
+      min-width: 34px;
+    }
+    .pen-btn:hover { background: rgba(0, 0, 0, 0.06); }
+    .pen-btn.on { background: #6965db; color: #fff; }
+    .pen-btn.danger { color: #d70015; font-weight: 600; }
+    .pen-dot {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+      cursor: pointer;
+      padding: 0;
+      flex: none;
+    }
+    .pen-dot.on { box-shadow: 0 0 0 2px #6965db; }
+    /* 粗细滑杆：连续可调 + 圆点实时预览 */
+    .pen-slider {
+      width: 92px;
+      height: 26px;
+      margin: 0 2px;
+      accent-color: #6965db;
+      cursor: pointer;
+    }
+    .pen-width-dot {
+      flex: none;
+      border-radius: 50%;
+      background: #1b1b1f;
+      transition: width .12s ease, height .12s ease;
+    }
+    .pen-sep { width: 1px; height: 18px; background: rgba(0, 0, 0, 0.12); margin: 0 3px; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div class="pane" id="code-pane">
+      <div class="pane-bar">
+        <span class="pane-title">Mermaid 代码</span>
+        <select class="mbtn" id="tpl-select" title="插入示例模板">
+          <option value="">示例…</option>
+          <option value="flow">流程图</option>
+          <option value="sequence">时序图</option>
+          <option value="state">状态图</option>
+          <option value="gantt">甘特图</option>
+          <option value="pie">饼图</option>
+        </select>
+        <button class="mbtn" id="clear-btn" title="清空代码">清空</button>
+        <button class="mbtn" id="code-undo" title="撤销（模板替换 / 清空）">↶</button>
+        <button class="mbtn" id="show-preview" title="显示预览区" style="display:none">显示预览»</button>
+        <button class="mbtn" id="hide-code" title="收起代码区，看大图">«</button>
+      </div>
+      <div id="code-wrap">
+        <div id="code-gutter">1</div>
+        <textarea id="code" spellcheck="false" placeholder="在这里输入 Mermaid 代码，例如：&#10;graph LR&#10;  vLLM --> LMCache --> Mooncake"></textarea>
+      </div>
+    </div>
+    <div id="split-divider" title="拖动调整比例，双击复位；拖到边缘可收起一侧"><span class="sd-grip"></span></div>
+    <div class="pane" id="preview-pane">
+      <div class="pane-bar">
+        <span class="pane-title">预览</span>
+        <select class="mbtn" id="theme-select" title="渲染主题（本地查看偏好，不同步）">
+          <option value="default">默认</option>
+          <option value="feishu">飞书风</option>
+        </select>
+        <button class="mbtn" id="zoom-out" title="缩小">−</button>
+        <span id="zoom-label" style="min-width:38px;text-align:center;font-size:11px;color:#6b7382">100%</span>
+        <button class="mbtn" id="zoom-in" title="放大">＋</button>
+        <button class="mbtn" id="zoom-fit" title="适配预览区">⤢</button>
+        <button class="mbtn" id="export-btn" title="导出 SVG / PNG（可选含标注）">导出</button>
+        <button class="mbtn" id="render-btn" title="立即重新渲染">渲染</button>
+        <button class="mbtn" id="show-code" title="显示代码区" style="display:none">«显示代码</button>
+        <button class="mbtn" id="hide-preview" title="收起预览区，专心写代码">»</button>
+      </div>
+      <div id="preview"><div class="placeholder"><b>还没有内容</b><br/>在左侧输入 Mermaid 代码，图会自动渲染在这里<br/>支持流程图 / 时序图 / 状态图 / 甘特图 / 饼图等</div></div>
+      <div id="render-error"></div>
+      <!-- iPad 展示标注：画笔颜色 / 撤销 / 清空（仅 iPad 布局显示） -->
+      <div id="pen-bar">
+        <button class="pen-btn" id="pen-toggle" title="画笔开/关">✎</button>
+        <span class="pen-sep"></span>
+        <button class="pen-dot on" id="pen-c0" style="background:#e03131" title="红"></button>
+        <button class="pen-dot" id="pen-c1" style="background:#f08c00" title="橙"></button>
+        <button class="pen-dot" id="pen-c2" style="background:#2f9e44" title="绿"></button>
+        <button class="pen-dot" id="pen-c3" style="background:#1971c2" title="蓝"></button>
+        <button class="pen-dot" id="pen-c4" style="background:#212529" title="黑"></button>
+        <span class="pen-sep"></span>
+        <input type="range" id="pen-width" class="pen-slider" min="1" max="14" step="0.5" value="4" title="笔迹粗细（拖动调节）">
+        <span class="pen-width-dot" id="pen-width-dot" style="width:9px;height:9px"></span>
+        <span class="pen-sep"></span>
+        <button class="pen-btn" id="pen-undo" title="撤销上一笔">↶</button>
+        <button class="pen-btn" id="pen-clear" title="清空全部标注">🗑</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    // 与 whiteboard.html 相同的错误通道：宿主可读的黑匣子 + bridgeError 上报
+    window.__dpadFatal = [];
+    window.addEventListener("error", function (e) {
+      window.__dpadFatal.push("E: " + e.message + " @" + String(e.filename || "").split("/").pop() + ":" + e.lineno + ":" + e.colno);
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+      window.__dpadFatal.push("R: " + String((e.reason && e.reason.message) || e.reason).slice(0, 400));
+    });
+  </script>
+  <script src="vendor/mermaid.bundle.js"></script>
+  <script>
+    (function () {
+      "use strict";
+
+      // ---- 双通道发送：WKWebView 用 messageHandlers；浏览器 iframe 用 postMessage ----
+      function post(name, data) {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
+          window.webkit.messageHandlers[name].postMessage(data);
+          return;
+        }
+        try {
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ drawpadCanvas: true, name: name, data: data }, "*");
+          }
+        } catch (e) {}
+      }
+
+      // ---- 文档模型：{ "code": "...", "strokes": [...] }，strokes 为展示标注 ----
+      var EMPTY_DOC = { code: "", strokes: [] };
+      var doc = { code: "", strokes: [] };
+      var lastRemoteJSON = JSON.stringify(EMPTY_DOC);
+      var lastSentJSON = null; // 本地发送基线：没有它，"输入→清空"这类回到基线状态的操作会被当成远端回声吞掉
+      var emitTimer = 0;
+      var renderTimer = 0;
+      var renderSeq = 0;
+      var libReady = false;
+
+      var codeEl = document.getElementById("code");
+      var previewEl = document.getElementById("preview");
+      var errorEl = document.getElementById("render-error");
+      var penBar = document.getElementById("pen-bar");
+
+      function serializeDoc() {
+        doc.code = codeEl.value;
+        doc.strokes = strokes;
+        return JSON.stringify(doc);
+      }
+
+      function emitSceneChange() {
+        clearTimeout(emitTimer);
+        emitTimer = setTimeout(function () {
+          var json = serializeDoc();
+          if (json === lastRemoteJSON || json === lastSentJSON) return;
+          lastSentJSON = json;
+          post("sceneChange", json);
+        }, 120);
+      }
+
+      // ---- Mermaid 渲染 ----
+      // ---- 主题：默认 / 飞书风（配色取飞书品牌：主蓝 #3370FF、正文 #1F2329、灰线 #8F959E、苹方字体）----
+      var MERMAID_THEMES = {
+        default: {
+          label: "默认",
+          initialize: {
+            theme: "default",
+            fontFamily: "-apple-system, \"PingFang SC\", \"Segoe UI\", sans-serif"
+          }
+        },
+        feishu: {
+          label: "飞书风",
+          bodyClass: "theme-feishu",
+          initialize: {
+            theme: "base",
+            fontFamily: "\"PingFang SC\", \"Microsoft YaHei\", -apple-system, \"Segoe UI\", sans-serif",
+            themeVariables: {
+              fontSize: "14px",
+              // 流程图 / 通用
+              primaryColor: "#E8F0FF", primaryBorderColor: "#3370FF", primaryTextColor: "#1F2329",
+              secondaryColor: "#FFF3E0", secondaryBorderColor: "#FF8800", secondaryTextColor: "#1F2329",
+              tertiaryColor: "#E8F8F0", tertiaryBorderColor: "#34C724", tertiaryTextColor: "#1F2329",
+              lineColor: "#8F959E",
+              textColor: "#1F2329",
+              mainBkg: "#E8F0FF", nodeBorder: "#3370FF", nodeTextColor: "#1F2329",
+              edgeLabelBackground: "#FFFFFF",
+              clusterBkg: "#F5F6F7", clusterBorder: "#E5E6EB", titleColor: "#1F2329",
+              // 时序图
+              actorBkg: "#E8F0FF", actorBorder: "#3370FF", actorTextColor: "#1F2329",
+              actorLineColor: "#BBBFC4",
+              signalColor: "#1F2329", signalTextColor: "#1F2329",
+              labelBoxBkgColor: "#E8F0FF", labelBoxBorderColor: "#3370FF", labelTextColor: "#3370FF",
+              loopTextColor: "#3370FF", activationBkgColor: "#D6E4FF", activationBorderColor: "#3370FF",
+              noteBkgColor: "#FFF8E1", noteBorderColor: "#FFC60A", noteTextColor: "#1F2329",
+              sequenceNumberColor: "#FFFFFF",
+              // 状态图 / 类图 / 甘特
+              labelBackgroundColor: "#FFFFFF",
+              altBackground: "#F5F6F7",
+              classText: "#1F2329",
+              stateBkg: "#E8F0FF", stateBorder: "#3370FF", stateTextColor: "#1F2329",
+              transitionColor: "#8F959E", transitionLabelColor: "#1F2329",
+              git0: "#3370FF", git1: "#FF8800", git2: "#34C724", git3: "#FF7700", git4: "#8F959E",
+              // 甘特图
+              sectionBkgColor: "#F5F6F7", sectionBkgColor2: "#EBEDF0",
+              taskBkgColor: "#D6E4FF", taskTextColor: "#1F2329", taskTextDarkColor: "#1F2329",
+              taskTextOutsideColor: "#1F2329", taskTextLightColor: "#1F2329",
+              activeTaskBkgColor: "#3370FF", activeTaskBorderColor: "#2B5CD9",
+              doneTaskBkgColor: "#E2E6EA", doneTaskBorderColor: "#BBBFC4",
+              critBkgColor: "#FFECE8", critBorderColor: "#F54A45",
+              gridColor: "#E5E6EB", todayLineColor: "#F54A45"
+            }
+          }
+        }
+      };
+      var currentTheme = "default";
+      try {
+        var savedTheme = localStorage.getItem("dpad-mermaid-theme");
+        if (savedTheme && MERMAID_THEMES[savedTheme]) currentTheme = savedTheme;
+      } catch (e) {}
+
+      function applyThemeToUI() {
+        var conf = MERMAID_THEMES[currentTheme];
+        document.body.classList.remove("theme-feishu");
+        if (conf && conf.bodyClass) document.body.classList.add(conf.bodyClass);
+      }
+
+      function initLibrary() {
+        if (!window.mermaid || !window.mermaid.initialize) return false;
+        try {
+          var themeConf = MERMAID_THEMES[currentTheme] || MERMAID_THEMES.default;
+          var init = Object.assign({ startOnLoad: false, securityLevel: "strict" }, themeConf.initialize);
+          window.mermaid.initialize(init);
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function setTheme(name) {
+        if (!MERMAID_THEMES[name]) return;
+        currentTheme = name;
+        try { localStorage.setItem("dpad-mermaid-theme", name); } catch (e) {}
+        applyThemeToUI();
+        initLibrary();
+        renderNow();
+      }
+
+      function renderNow() {
+        var code = codeEl.value.trim();
+        var seq = ++renderSeq; // 清空分支也要递增：让在途的旧渲染过期，避免旧图晚到后重新出现
+        if (!code) {
+          previewEl.innerHTML = "<div class=\"placeholder\"><b>还没有内容</b><br/>在左侧输入 Mermaid 代码，图会自动渲染在这里</div>";
+          previewEl.appendChild(overlaySvg);
+          errorEl.style.display = "none";
+          placeOverlay();
+          return;
+        }
+        if (!libReady) return;
+        window.mermaid.render("dpad-mermaid-" + seq, code).then(function (result) {
+          if (seq !== renderSeq) return; // 已有更新的输入，丢弃过期渲染
+          errorEl.style.display = "none";
+          previewEl.innerHTML = result.svg;
+          previewEl.appendChild(overlaySvg); // 渲染重建 DOM 后把覆盖层挂回去
+          placeOverlay();
+          renderStrokes();
+          setPreviewZoom(previewZoom); // 新图按当前比例重新应用缩放
+        }).catch(function (err) {
+          if (seq !== renderSeq) return;
+          var msg = String((err && err.message) || err);
+          errorEl.textContent = "";
+          errorEl.appendChild(document.createTextNode(msg));
+          // mermaid 报错带行号（"Parse error on line N:"）：附定位链接，点击选中那一行
+          var lineMatch = /line\s+(\d+)/i.exec(msg);
+          if (lineMatch) {
+            var link = document.createElement("span");
+            link.className = "line-link";
+            link.textContent = "定位第 " + lineMatch[1] + " 行";
+            link.addEventListener("click", function () {
+              var target = parseInt(lineMatch[1], 10) || 1;
+              var lines = codeEl.value.split("\n");
+              var start = 0;
+              for (var i = 0; i < Math.min(target - 1, lines.length); i++) start += lines[i].length + 1;
+              var end = Math.min(start + (lines[Math.min(target - 1, lines.length - 1)] || "").length, codeEl.value.length);
+              codeEl.focus();
+              codeEl.setSelectionRange(start, end);
+              // 滚到目标行
+              var lineHeight = 20.8; // 13px * 1.6
+              codeEl.scrollTop = Math.max(0, (target - 3) * lineHeight);
+            });
+            errorEl.appendChild(link);
+          }
+          errorEl.style.display = "block";
+        });
+      }
+
+      function scheduleRender() {
+        clearTimeout(renderTimer);
+        renderTimer = setTimeout(renderNow, 600);
+      }
+
+      // ---- 行号：与 textarea 同步滚动 ----
+      var gutterEl = document.getElementById("code-gutter");
+      function refreshGutter() {
+        var count = codeEl.value.split("\n").length;
+        var html = "";
+        for (var i = 1; i <= count; i++) html += i + "\n";
+        gutterEl.textContent = html;
+        gutterEl.scrollTop = codeEl.scrollTop;
+      }
+      codeEl.addEventListener("scroll", function () { gutterEl.scrollTop = codeEl.scrollTop; });
+      refreshGutter();
+
+      // ---- 代码撤销：模板替换 / 清空这类程序改值不被 textarea 原生撤销覆盖，手动记快照 ----
+      var codeUndoStack = [];
+      function rememberCode() {
+        codeUndoStack.push(codeEl.value);
+        if (codeUndoStack.length > 30) codeUndoStack.shift();
+      }
+      function undoCode() {
+        if (!codeUndoStack.length) return;
+        codeEl.value = codeUndoStack.pop();
+        refreshGutter();
+        scheduleRender();
+        emitSceneChange();
+      }
+      document.getElementById("code-undo").addEventListener("click", undoCode);
+
+      codeEl.addEventListener("input", function () {
+        refreshGutter();
+        scheduleRender();
+        emitSceneChange();
+      });
+      // Tab 键插入缩进而不是移出焦点
+      codeEl.addEventListener("keydown", function (event) {
+        if (event.key === "Tab") {
+          event.preventDefault();
+          var start = codeEl.selectionStart, end = codeEl.selectionEnd;
+          codeEl.value = codeEl.value.slice(0, start) + "  " + codeEl.value.slice(end);
+          codeEl.selectionStart = codeEl.selectionEnd = start + 2;
+          refreshGutter();
+          // 程序改值不触发 input，手动通知编辑流程（预览 + 保存）
+          scheduleRender();
+          emitSceneChange();
+        }
+      });
+
+      document.getElementById("render-btn").addEventListener("click", renderNow);
+      document.getElementById("clear-btn").addEventListener("click", function () {
+        if (codeEl.value === "") return;
+        rememberCode();
+        codeEl.value = "";
+        refreshGutter();
+        renderNow();
+        emitSceneChange();
+      });
+
+      var TEMPLATES = {
+        flow: "graph LR\n  A[开始] --> B{条件?}\n  B -- 是 --> C[处理]\n  B -- 否 --> D[跳过]\n  C --> E[结束]\n  D --> E",
+        sequence: "sequenceDiagram\n  participant C as 客户端\n  participant S as 服务\n  participant D as 存储\n  C->>S: 请求\n  S->>D: 读数据\n  D-->>S: 返回\n  S-->>C: 响应",
+        state: "stateDiagram-v2\n  [*] --> 空闲\n  空闲 --> 运行: 启动\n  运行 --> 暂停: 挂起\n  暂停 --> 运行: 恢复\n  运行 --> [*]: 停止",
+        gantt: "gantt\n  title 排期\n  dateFormat YYYY-MM-DD\n  section 阶段一\n  调研 :a1, 2026-10-01, 7d\n  开发 :a2, after a1, 14d\n  section 阶段二\n  测试 :b1, after a2, 7d\n  上线 :milestone, after b1, 0d",
+        pie: "pie title 占比\n  \"核心\" : 62\n  \"周边\" : 26\n  \"其他\" : 12"
+      };
+      document.getElementById("tpl-select").addEventListener("change", function (event) {
+        var tpl = TEMPLATES[event.target.value];
+        event.target.value = "";
+        if (!tpl) return;
+        rememberCode();
+        codeEl.value = tpl;
+        refreshGutter();
+        renderNow();
+        emitSceneChange();
+      });
+
+      // ---- 展示标注（画笔）：坐标存在图的 viewBox 空间，跨设备尺寸仍然精确贴图 ----
+      var strokes = [];
+      var penColor = "#e03131";
+      var penWidthPx = 4; // 视觉像素粗细（细 2.5 / 中 4 / 粗 8），画时换算到 viewBox 单位
+      var penActive = false;
+      var overlaySvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      overlaySvg.id = "pen-overlay";
+      // 透明底板：WebKit（iPad）只对有绘制内容的 SVG 区域做命中测试，
+      // 没有它就只能从已有笔迹上"延伸"，空白处点不到。底板铺满视口，接管全部触摸。
+      var backdrop = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      backdrop.setAttribute("width", "100%");
+      backdrop.setAttribute("height", "100%");
+      backdrop.setAttribute("fill", "transparent");
+      overlaySvg.appendChild(backdrop);
+      previewEl.appendChild(overlaySvg);
+
+      // 覆盖层铺满整个预览滚动区（含图的四周空白，空白处也要能落笔），
+      // 但 viewBox 以图的坐标系为锚点换算 —— 笔迹存图的空间坐标，跨设备尺寸精确贴图。
+      // 注意：SVG 元素没有 offsetLeft/clientWidth（Chromium 扩展在 WebKit/iPad 是 undefined），
+      // 一律用 getBoundingClientRect 换算。
+      function placeOverlay() {
+        var diagram = previewEl.querySelector("svg:not(#pen-overlay)");
+        var w = Math.max(previewEl.scrollWidth, previewEl.clientWidth);
+        var h = Math.max(previewEl.scrollHeight, previewEl.clientHeight);
+        overlaySvg.style.left = "0px";
+        overlaySvg.style.top = "0px";
+        overlaySvg.style.width = w + "px";
+        overlaySvg.style.height = h + "px";
+        overlaySvg.setAttribute("preserveAspectRatio", "none");
+        if (diagram) {
+          var vb = diagram.viewBox && diagram.viewBox.baseVal;
+          var hasVB = vb && vb.width > 0 && vb.height > 0;
+          var dRect = diagram.getBoundingClientRect();
+          var ovRect = overlaySvg.getBoundingClientRect();
+          var boxW, boxH, originX, originY;
+          if (hasVB) {
+            // 图的 viewBox 坐标系铺到 overlay：以图在 overlay 内的偏移反推 overlay 的 viewBox
+            var scale = vb.width / Math.max(1, dRect.width);
+            var scaleY = vb.height / Math.max(1, dRect.height);
+            originX = vb.x - (dRect.left - ovRect.left) * scale;
+            originY = vb.y - (dRect.top - ovRect.top) * scaleY;
+            boxW = ovRect.width * scale;
+            boxH = ovRect.height * scaleY;
+          } else {
+            originX = 0; originY = 0;
+            boxW = dRect.width; boxH = dRect.height;
+          }
+          overlaySvg.setAttribute("viewBox", originX + " " + originY + " " + boxW + " " + boxH);
+        } else {
+          overlaySvg.setAttribute("viewBox", "0 0 1000 " + Math.round(1000 * h / Math.max(1, w)));
+        }
+      }
+
+      function diagramRect() {
+        var diagram = previewEl.querySelector("svg:not(#pen-overlay)");
+        return diagram ? diagram.getBoundingClientRect() : overlaySvg.getBoundingClientRect();
+      }
+
+      function vbPoint(clientX, clientY) {
+        // 统一映射到「图的 viewBox 坐标系」：图外的空白映射为负/超界值，
+        // 同样相对图的边缘成比例，跨设备尺寸保持一致。
+        var diagram = previewEl.querySelector("svg:not(#pen-overlay)");
+        if (diagram) {
+          var vb = diagram.viewBox && diagram.viewBox.baseVal;
+          var dRect = diagram.getBoundingClientRect();
+          if (vb && vb.width > 0 && vb.height > 0) {
+            var fx = (clientX - dRect.left) / Math.max(1, dRect.width);
+            var fy = (clientY - dRect.top) / Math.max(1, dRect.height);
+            return [round2(vb.x + fx * vb.width), round2(vb.y + fy * vb.height)];
+          }
+          return [round2(clientX - dRect.left), round2(clientY - dRect.top)];
+        }
+        var box = overlaySvg.viewBox.baseVal;
+        var r = overlaySvg.getBoundingClientRect();
+        var fx = (clientX - r.left) / Math.max(1, r.width);
+        var fy = (clientY - r.top) / Math.max(1, r.height);
+        return [round2(box.x + fx * box.width), round2(box.y + fy * box.height)];
+      }
+
+      function round2(value) { return Math.round(value * 100) / 100; }
+
+      function polylineFor(stroke) {
+        var el = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        el.setAttribute("points", stroke.points.map(function (p) { return p[0] + "," + p[1]; }).join(" "));
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", stroke.color);
+        el.setAttribute("stroke-width", stroke.width);
+        el.setAttribute("stroke-linecap", "round");
+        el.setAttribute("stroke-linejoin", "round");
+        return el;
+      }
+
+      function renderStrokes() {
+        while (overlaySvg.firstChild && overlaySvg.firstChild !== backdrop) overlaySvg.removeChild(overlaySvg.firstChild);
+        var ref = backdrop.nextSibling;
+        while (ref) {
+          var next = ref.nextSibling;
+          if (ref !== liveLine) overlaySvg.removeChild(ref);
+          ref = next;
+        }
+        for (var i = 0; i < strokes.length; i++) overlaySvg.insertBefore(polylineFor(strokes[i]), backdrop);
+        if (liveLine) overlaySvg.appendChild(liveLine);
+      }
+
+      var liveLine = null;
+
+      function setPenActive(on) {
+        penActive = on;
+        overlaySvg.classList.toggle("drawing", on);
+        document.getElementById("pen-toggle").classList.toggle("on", on);
+        document.getElementById("pen-toggle").title = on ? "退出画笔（恢复滚动）" : "画笔开/关（Apple Pencil 绘制，手指移动画布）";
+      }
+
+      document.getElementById("pen-toggle").addEventListener("click", function () { setPenActive(!penActive); });
+      for (var ci = 0; ci < 5; ci++) {
+        (function (index) {
+          var dot = document.getElementById("pen-c" + index);
+          dot.addEventListener("click", function () {
+            penColor = dot.style.background;
+            var dots = penBar.querySelectorAll(".pen-dot");
+            for (var i = 0; i < dots.length; i++) dots[i].classList.remove("on");
+            dot.classList.add("on");
+            if (!penActive) setPenActive(true);
+          });
+        })(ci);
+      }
+
+      // 粗细滑杆：1–14px 连续可调，圆点实时预览，记住上次设置
+      var widthSlider = document.getElementById("pen-width");
+      var widthDot = document.getElementById("pen-width-dot");
+      function applyPenWidth(px) {
+        penWidthPx = Math.min(14, Math.max(1, px));
+        var shown = Math.min(20, Math.max(4, penWidthPx + 3));
+        widthDot.style.width = shown + "px";
+        widthDot.style.height = shown + "px";
+        try { localStorage.setItem("dpad-pen-width", String(penWidthPx)); } catch (e) {}
+      }
+      try {
+        var savedWidth = parseFloat(localStorage.getItem("dpad-pen-width"));
+        if (isFinite(savedWidth)) widthSlider.value = String(Math.min(14, Math.max(1, savedWidth)));
+      } catch (e) {}
+      applyPenWidth(parseFloat(widthSlider.value) || 4);
+      widthSlider.addEventListener("input", function () {
+        applyPenWidth(parseFloat(widthSlider.value) || 4);
+        if (!penActive) setPenActive(true);
+      });
+
+      document.getElementById("pen-undo").addEventListener("click", function () {
+        if (!strokes.length) return;
+        strokes.pop();
+        renderStrokes();
+        emitSceneChange();
+      });
+
+      // 清空全部标注：两步确认（防展示时误触）
+      var clearArmed = false, clearTimer = 0;
+      var clearBtn = document.getElementById("pen-clear");
+      function disarmClear() {
+        clearArmed = false;
+        clearTimeout(clearTimer);
+        clearBtn.textContent = "🗑";
+        clearBtn.classList.remove("danger");
+        clearBtn.title = "清空全部标注";
+      }
+      clearBtn.addEventListener("click", function () {
+        if (!strokes.length) return;
+        if (!clearArmed) {
+          clearArmed = true;
+          clearBtn.textContent = "确认";
+          clearBtn.classList.add("danger");
+          clearBtn.title = "再次点击清空";
+          clearTimer = setTimeout(disarmClear, 2500);
+          return;
+        }
+        disarmClear();
+        strokes = [];
+        renderStrokes();
+        emitSceneChange();
+      });
+
+      // 触摸/鼠标/Apple Pencil 分流：Apple Pencil（和桌面鼠标）绘制，手指平移画布。
+      // 全程按 pointerId 过滤 —— 第二根手指的 move/up 不得污染或提前结束当前笔画。
+      overlaySvg.addEventListener("pointerdown", function (event) {
+        if (!penActive || event.button > 0) return;
+        event.preventDefault();
+        try { overlaySvg.setPointerCapture(event.pointerId); } catch (e) {}
+        var activePointer = event.pointerId;
+        function only(pointerEvent) { return pointerEvent.pointerId === activePointer; }
+        if (event.pointerType === "touch") {
+          // 手指：移动画布（滚动预览区），不落笔
+          var panLastX = event.clientX, panLastY = event.clientY;
+          var onPanMove = function (panEvent) {
+            if (!only(panEvent)) return;
+            previewEl.scrollLeft += panLastX - panEvent.clientX;
+            previewEl.scrollTop += panLastY - panEvent.clientY;
+            panLastX = panEvent.clientX;
+            panLastY = panEvent.clientY;
+          };
+          var onPanUp = function (panEvent) {
+            if (!only(panEvent)) return;
+            overlaySvg.removeEventListener("pointermove", onPanMove);
+            overlaySvg.removeEventListener("pointerup", onPanUp);
+            overlaySvg.removeEventListener("pointercancel", onPanUp);
+          };
+          overlaySvg.addEventListener("pointermove", onPanMove);
+          overlaySvg.addEventListener("pointerup", onPanUp);
+          overlaySvg.addEventListener("pointercancel", onPanUp);
+          return;
+        }
+        var box = overlaySvg.viewBox.baseVal;
+        var r = overlaySvg.getBoundingClientRect();
+        var width = Math.max(1, penWidthPx * (box.width / Math.max(1, r.width))); // 所选视觉粗细换算到 viewBox 单位
+        liveLine = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        liveLine.setAttribute("fill", "none");
+        liveLine.setAttribute("stroke", penColor);
+        liveLine.setAttribute("stroke-width", width);
+        liveLine.setAttribute("stroke-linecap", "round");
+        liveLine.setAttribute("stroke-linejoin", "round");
+        var points = [vbPoint(event.clientX, event.clientY)];
+        liveLine.setAttribute("points", points[0][0] + "," + points[0][1]);
+        overlaySvg.appendChild(liveLine);
+        var moved = false;
+
+        var onMove = function (moveEvent) {
+          if (!only(moveEvent)) return;
+          var p = vbPoint(moveEvent.clientX, moveEvent.clientY);
+          var last = points[points.length - 1];
+          if (Math.abs(p[0] - last[0]) + Math.abs(p[1] - last[1]) < 0.8) return; // 距离阈值，避免点过密
+          points.push(p);
+          liveLine.setAttribute("points", points.map(function (q) { return q[0] + "," + q[1]; }).join(" "));
+          moved = true;
+        };
+        var onUp = function (upEvent) {
+          if (!only(upEvent)) return;
+          overlaySvg.removeEventListener("pointermove", onMove);
+          overlaySvg.removeEventListener("pointerup", onUp);
+          overlaySvg.removeEventListener("pointercancel", onUp);
+          if (points.length >= 2) {
+            strokes.push({ points: points, color: penColor, width: width });
+            emitSceneChange();
+          }
+          liveLine = null;
+          renderStrokes();
+        };
+        overlaySvg.addEventListener("pointermove", onMove);
+        overlaySvg.addEventListener("pointerup", onUp);
+        overlaySvg.addEventListener("pointercancel", onUp);
+      });
+
+      window.addEventListener("resize", function () { placeOverlay(); applySplit(); });
+
+      // ---- 预览缩放 / 适配（缩放/平移跨端同步：z = 预览缩放倍率，cx/cy = 100% 缩放下内容的滚动中心）----
+      var previewZoom = 1;
+      var zoomLabel = document.getElementById("zoom-label");
+      var viewportSuppressUntil = 0; // 应用远端视口期间不回发，避免两端互相触发
+      var lastSentViewport = null;
+      var viewportNotifyTimer = 0;
+      function diagramSvgEl() { return previewEl.querySelector("svg:not(#pen-overlay)"); }
+      function clampZoom(z) { return Math.min(6, Math.max(0.1, z)); }
+      function naturalDiagramSize(diagram) {
+        // mermaid v11 会把内容宽度写进 svg 的 style.maxWidth；否则用当前渲染尺寸
+        var mw = parseFloat(diagram.style.maxWidth);
+        var r = diagram.getBoundingClientRect();
+        var w = isFinite(mw) && mw > 0 ? mw : r.width;
+        return { w: w, h: r.width > 0 ? w * r.height / r.width : w };
+      }
+      function currentViewportState() {
+        return {
+          cx: (previewEl.scrollLeft + previewEl.clientWidth / 2) / previewZoom,
+          cy: (previewEl.scrollTop + previewEl.clientHeight / 2) / previewZoom,
+          z: previewZoom,
+          vw: previewEl.clientWidth,
+          vh: previewEl.clientHeight
+        };
+      }
+      function notifyViewport(zoomChanged) {
+        if (Date.now() < viewportSuppressUntil) return;
+        clearTimeout(viewportNotifyTimer);
+        viewportNotifyTimer = setTimeout(function () {
+          var payload = currentViewportState();
+          if (!lastSentViewport) { lastSentViewport = payload; return; } // 首次只建立基线，不上报
+          var zoomChangedOut = Math.abs(lastSentViewport.z - payload.z) > 0.004;
+          var panChanged = Math.abs(lastSentViewport.cx - payload.cx) > 1 || Math.abs(lastSentViewport.cy - payload.cy) > 1;
+          lastSentViewport = payload;
+          if (zoomChanged && zoomChangedOut) post("viewportZoom", JSON.stringify(payload));
+          else if (!zoomChanged && panChanged) post("viewportPan", JSON.stringify(payload));
+        }, 60);
+      }
+      function setPreviewZoom(z) {
+        previewZoom = clampZoom(z);
+        var diagram = diagramSvgEl();
+        if (diagram) {
+          if (Math.abs(previewZoom - 1) < 0.005) {
+            diagram.style.width = "";
+            diagram.style.maxWidth = "";
+          } else {
+            var nat = naturalDiagramSize(diagram);
+            diagram.style.maxWidth = "none";
+            diagram.style.width = Math.round(nat.w * previewZoom) + "px";
+          }
+        }
+        zoomLabel.textContent = Math.round(previewZoom * 100) + "%";
+        placeOverlay();
+        notifyViewport(true);
+      }
+      function applyRemoteViewport(payload, fromZoom) {
+        viewportSuppressUntil = Date.now() + 350;
+        lastSentViewport = { cx: payload.cx, cy: payload.cy, z: payload.z, vw: previewEl.clientWidth, vh: previewEl.clientHeight };
+        if (Math.abs(payload.z - previewZoom) > 0.004) setPreviewZoom(payload.z);
+        // 平移：100% 内容坐标 → 当前缩放的滚动偏移
+        previewEl.scrollLeft = payload.cx * previewZoom - previewEl.clientWidth / 2;
+        previewEl.scrollTop = payload.cy * previewZoom - previewEl.clientHeight / 2;
+        placeOverlay();
+      }
+      function zoomFit() {
+        var diagram = diagramSvgEl();
+        if (!diagram) return;
+        var nat = naturalDiagramSize(diagram);
+        var availW = Math.max(60, previewEl.clientWidth - 32);
+        var availH = Math.max(60, previewEl.clientHeight - 32);
+        setPreviewZoom(Math.min(availW / nat.w, availH / nat.h));
+      }
+      previewEl.addEventListener("scroll", function () { notifyViewport(false); });
+
+      // 主题切换接线
+      document.getElementById("theme-select").addEventListener("change", function (event) {
+        setTheme(event.target.value);
+      });
+
+      document.getElementById("zoom-in").addEventListener("click", function () { setPreviewZoom(previewZoom * 1.25); });
+      document.getElementById("zoom-out").addEventListener("click", function () { setPreviewZoom(previewZoom / 1.25); });
+      document.getElementById("zoom-fit").addEventListener("click", zoomFit);
+
+      // ---- 导出 SVG / PNG（可选是否包含标注）----
+      function buildExportSVG(includeStrokes) {
+        var diagram = diagramSvgEl();
+        if (!diagram) return null;
+        var clone = diagram.cloneNode(true);
+        var vb = diagram.viewBox && diagram.viewBox.baseVal;
+        var w = vb && vb.width > 0 ? vb.width : naturalDiagramSize(diagram).w;
+        var h = vb && vb.height > 0 ? vb.height : naturalDiagramSize(diagram).h;
+        clone.setAttribute("width", String(Math.round(w)));
+        clone.setAttribute("height", String(Math.round(h)));
+        clone.removeAttribute("style");
+        // 标注存的就是图的 viewBox 坐标，直接追加即可精确对齐
+        if (includeStrokes) {
+          for (var i = 0; i < strokes.length; i++) clone.appendChild(polylineFor(strokes[i]));
+        }
+        return new XMLSerializer().serializeToString(clone);
+      }
+      function downloadBlob(name, blob) {
+        try {
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+          return true;
+        } catch (e) { return false; }
+      }
+      function svgToPngBlob(svgText, scale, done) {
+        var blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+        var url = URL.createObjectURL(blob);
+        var img = new Image();
+        img.onload = function () {
+          try {
+            var canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round((img.width || img.naturalWidth) * scale));
+            canvas.height = Math.max(1, Math.round((img.height || img.naturalHeight) * scale));
+            var ctx = canvas.getContext("2d");
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            canvas.toBlob(done, "image/png");
+          } catch (e) { URL.revokeObjectURL(url); done(null); }
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); done(null); };
+        img.src = url;
+      }
+      function exportToast(text) {
+        var t = document.createElement("div");
+        t.textContent = text;
+        t.style.cssText = "position:absolute;top:42px;left:50%;transform:translateX(-50%);background:#1b1b1f;color:#fff;padding:6px 14px;border-radius:8px;font-size:12px;z-index:60;opacity:.92;pointer-events:none";
+        document.getElementById("preview-pane").appendChild(t);
+        setTimeout(function () { t.remove(); }, 1800);
+      }
+      function doExport(kind, includeStrokes) {
+        var svgText = buildExportSVG(includeStrokes);
+        if (!svgText) { exportToast("还没有可导出的图"); return; }        var stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+        if (kind === "svg") {
+          downloadBlob("mermaid-" + stamp + (includeStrokes ? "-annotated" : "") + ".svg", new Blob([svgText], { type: "image/svg+xml;charset=utf-8" }));
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(svgText).then(function () { exportToast("SVG 已下载并复制"); }, function () { exportToast("SVG 已下载"); });
+          } else exportToast("SVG 已下载");
+          return;
+        }
+        svgToPngBlob(svgText, 2, function (blob) {
+          if (!blob) { exportToast("PNG 生成失败"); return; }
+          var downloaded = downloadBlob("mermaid-" + stamp + (includeStrokes ? "-annotated" : "") + ".png", blob);
+          if (navigator.clipboard && window.ClipboardItem) {
+            navigator.clipboard.write([new ClipboardItem({ "image/png": blob })])
+              .then(function () { exportToast(downloaded ? "PNG 已下载并复制" : "PNG 已复制"); }, function () { exportToast(downloaded ? "PNG 已下载" : "PNG 复制失败"); });
+          } else exportToast(downloaded ? "PNG 已下载" : "PNG 导出失败（环境不支持）");
+        });
+      }
+      window.__dpadExportSVG = buildExportSVG; // 调试/宿主校验钩子
+      (function initExportMenu() {
+        var menu = document.createElement("div");
+        menu.style.cssText = "position:absolute;top:38px;right:10px;background:#fff;border:1px solid #dce1e9;border-radius:10px;box-shadow:0 8px 24px rgba(21,32,51,.14);padding:5px;z-index:40;display:none;min-width:168px;font-size:12px";
+        var items = [
+          ["导出 SVG（含标注）", "svg", true],
+          ["导出 SVG（纯图）", "svg", false],
+          ["导出 PNG（含标注）", "png", true],
+          ["导出 PNG（纯图）", "png", false],
+        ];
+        items.forEach(function (item) {
+          var btn = document.createElement("button");
+          btn.className = "mbtn";
+          btn.textContent = item[0];
+          btn.style.cssText = "display:block;width:100%;border:0;text-align:left;margin:1px 0";
+          btn.addEventListener("click", function () {
+            menu.style.display = "none";
+            doExport(item[1], item[2]);
+          });
+          menu.appendChild(btn);
+        });
+        document.getElementById("preview-pane").appendChild(menu);
+        var toggle = document.getElementById("export-btn");
+        toggle.addEventListener("click", function (event) {
+          event.stopPropagation();
+          menu.style.display = menu.style.display === "none" ? "block" : "none";
+        });
+        document.addEventListener("pointerdown", function (event) {
+          if (!menu.contains(event.target) && event.target !== toggle) menu.style.display = "none";
+        });
+      })();
+
+      // ---- 分区调整：拖动分隔条改比例；拖到边缘/点按钮完全收起一侧，可随时恢复 ----
+      var wrapEl = document.getElementById("wrap");
+      var codePane = document.getElementById("code-pane");
+      var divider = document.getElementById("split-divider");
+      var DEFAULT_RATIO = 0.42;
+      var splitRatio = DEFAULT_RATIO; // 代码区占比；0=代码区收起，1=预览区收起
+      var lastOpenRatio = DEFAULT_RATIO;
+      try {
+        var saved = parseFloat(localStorage.getItem("dpad-mermaid-split"));
+        if (isFinite(saved) && saved >= 0 && saved <= 1) splitRatio = saved;
+      } catch (e) {}
+      if (splitRatio > 0.05 && splitRatio < 0.95) lastOpenRatio = splitRatio;
+
+      function isColumnLayout() {
+        return getComputedStyle(wrapEl).flexDirection === "column";
+      }
+
+      function applySplit() {
+        var column = isColumnLayout();
+        var previewPane = document.getElementById("preview-pane");
+        if (splitRatio <= 0.02) {
+          codePane.style.display = "none";
+          previewPane.style.display = "";
+          codePane.style.width = "";
+          codePane.style.height = "";
+        } else if (splitRatio >= 0.98) {
+          codePane.style.display = "";
+          previewPane.style.display = "none";
+          codePane.style.width = "100%";
+          codePane.style.height = "100%";
+        } else {
+          codePane.style.display = "";
+          previewPane.style.display = "";
+          if (column) { codePane.style.width = ""; codePane.style.height = (splitRatio * 100) + "%"; }
+          else { codePane.style.height = ""; codePane.style.width = (splitRatio * 100) + "%"; }
+        }
+        document.getElementById("hide-code").style.display = splitRatio <= 0.02 ? "none" : "";
+        document.getElementById("hide-preview").style.display = splitRatio >= 0.98 ? "none" : "";
+        document.getElementById("show-code").style.display = splitRatio <= 0.02 ? "" : "none";
+        document.getElementById("show-preview").style.display = splitRatio >= 0.98 ? "" : "none";
+        placeOverlay();
+      }
+
+      function saveSplit() {
+        try { localStorage.setItem("dpad-mermaid-split", String(splitRatio)); } catch (e) {}
+      }
+
+      function dragRatio(event) {
+        var r = wrapEl.getBoundingClientRect();
+        var ratio = isColumnLayout()
+          ? (event.clientY - r.top) / Math.max(1, r.height)
+          : (event.clientX - r.left) / Math.max(1, r.width);
+        return Math.min(0.98, Math.max(0.02, ratio));
+      }
+
+      divider.addEventListener("pointerdown", function (event) {
+        event.preventDefault();
+        divider.setPointerCapture(event.pointerId);
+        divider.classList.add("active");
+        var changed = false;
+        var onMove = function (moveEvent) {
+          var next = dragRatio(moveEvent);
+          if (Math.abs(next - splitRatio) > 0.002) {
+            splitRatio = next;
+            changed = true;
+            applySplit();
+          }
+        };
+        var onUp = function () {
+          divider.removeEventListener("pointermove", onMove);
+          divider.removeEventListener("pointerup", onUp);
+          divider.removeEventListener("pointercancel", onUp);
+          divider.classList.remove("active");
+          // 拖到边缘附近 → 完全收起该侧；否则记住这个比例
+          if (splitRatio < 0.1) splitRatio = 0;
+          else if (splitRatio > 0.9) splitRatio = 1;
+          else lastOpenRatio = splitRatio;
+          saveSplit();
+          applySplit();
+        };
+        divider.addEventListener("pointermove", onMove);
+        divider.addEventListener("pointerup", onUp);
+        divider.addEventListener("pointercancel", onUp);
+      });
+
+      divider.addEventListener("dblclick", function () {
+        splitRatio = lastOpenRatio = DEFAULT_RATIO;
+        saveSplit();
+        applySplit();
+      });
+
+      document.getElementById("hide-code").addEventListener("click", function () {
+        splitRatio = 0;
+        saveSplit();
+        applySplit();
+      });
+      document.getElementById("hide-preview").addEventListener("click", function () {
+        splitRatio = 1;
+        saveSplit();
+        applySplit();
+      });
+      document.getElementById("show-code").addEventListener("click", function () {
+        splitRatio = lastOpenRatio;
+        saveSplit();
+        applySplit();
+      });
+      document.getElementById("show-preview").addEventListener("click", function () {
+        splitRatio = lastOpenRatio;
+        saveSplit();
+        applySplit();
+      });
+
+      applySplit();
+
+      // iPad（或调试开关）才显示画笔工具条；Mac/Web 端被动渲染远端标注
+      var isPad =
+        /iPad/i.test(navigator.userAgent) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      try {
+        if (isPad || localStorage.getItem("dpad-pen-debug") === "1") penBar.classList.add("show");
+      } catch (e) {}
+
+      // ---- Swift / 浏览器宿主 → JS 桥（契约与 whiteboard.html 一致）----
+
+      function normalizeStrokes(raw) {
+        if (!Array.isArray(raw)) return [];
+        var out = [];
+        for (var i = 0; i < raw.length; i++) {
+          var s = raw[i];
+          if (!s || !Array.isArray(s.points)) continue;
+          var pts = [];
+          for (var j = 0; j < s.points.length; j++) {
+            var p = s.points[j];
+            if (Array.isArray(p) && typeof p[0] === "number" && typeof p[1] === "number"
+              && isFinite(p[0]) && isFinite(p[1])) pts.push([p[0], p[1]]);
+          }
+          if (pts.length >= 2) {
+            out.push({
+              points: pts,
+              color: typeof s.color === "string" ? s.color : "#e03131",
+              width: typeof s.width === "number" && s.width > 0 ? s.width : 3
+            });
+          }
+        }
+        return out;
+      }
+
+      function normalizeDoc(parsed) {
+        if (!parsed || typeof parsed !== "object") return null;
+        return { code: typeof parsed.code === "string" ? parsed.code : "", strokes: normalizeStrokes(parsed.strokes) };
+      }
+
+      function applyRemoteDoc(encodedJSON) {
+        var parsed;
+        try {
+          parsed = normalizeDoc(JSON.parse(encodedJSON));
+        } catch (err) {
+          return "error:" + err;
+        }
+        if (!parsed) return "error:invalid-mermaid-doc";
+        doc = parsed;
+        lastRemoteJSON = JSON.stringify(doc);
+        lastSentJSON = lastRemoteJSON; // 远端状态即为新基线，避免把它当本地变更回发
+        var strokesChanged = JSON.stringify(parsed.strokes) !== JSON.stringify(strokes);
+        if (strokesChanged) {
+          strokes = parsed.strokes;
+          renderStrokes();
+        }
+        if (codeEl.value !== doc.code) {
+          codeEl.value = doc.code; // 程序赋值不触发 input，不会回声
+          refreshGutter();
+          renderNow();
+        } else if (strokesChanged) {
+          placeOverlay();
+        }
+        return "ok";
+      }
+
+      window.__applyScene = function (encodedJSON) {
+        if (!libReady) return "not-ready";
+        return applyRemoteDoc(encodedJSON);
+      };
+
+      window.__getScene = function () {
+        return serializeDoc();
+      };
+
+      window.__isReady = function () {
+        return libReady;
+      };
+
+      // 视口同步桥：缩放倍率相对图的原始尺寸，与屏幕无关，不做比例换算
+      window.__applyViewportPan = function (cx, cy) {
+        applyRemoteViewport({ cx: cx, cy: cy, z: previewZoom }, false);
+        return "ok";
+      };
+      window.__applyViewportZoom = function (z, cx, cy, peerVw, peerVh) {
+        applyRemoteViewport({ cx: cx, cy: cy, z: z }, true);
+        return "ok:" + previewZoom.toFixed(2);
+      };
+      window.__fitToContent = function () { zoomFit(); return "ok"; };
+      window.__localZoom = function (factor) {
+        setPreviewZoom(previewZoom * (factor || 1));
+        return "ok:" + previewZoom.toFixed(2);
+      };
+      window.__getViewport = function () {
+        return JSON.stringify(currentViewportState());
+      };
+
+      window.addEventListener("message", function (event) {
+        var msg = event.data;
+        if (!msg || msg.drawpadCanvasCommand !== true) return;
+        if (msg.name === "__applyScene") {
+          applyRemoteDoc(msg.data);
+        } else if (msg.name === "__applyViewportPan") {
+          window.__applyViewportPan(msg.data.cx, msg.data.cy);
+        } else if (msg.name === "__applyViewportZoom") {
+          window.__applyViewportZoom(msg.data.z, msg.data.cx, msg.data.cy, msg.data.vw, msg.data.vh);
+        } else if (msg.name === "__getViewport") {
+          try { post("viewportZoom", window.__getViewport()); } catch (e) {}
+        }
+      });
+
+      // ---- 就绪上报：库脚本同步加载完成后初始化并 post ready ----
+      applyThemeToUI();
+      document.getElementById("theme-select").value = currentTheme;
+      libReady = initLibrary();
+      if (!libReady) {
+        // 库可能极慢（file:// 大文件），短暂轮询兜底
+        var tries = 0;
+        var poll = setInterval(function () {
+          libReady = initLibrary();
+          if (libReady || ++tries > 50) {
+            clearInterval(poll);
+            if (libReady) post("ready", { version: 1 });
+            else post("bridgeError", "mermaid library failed to initialize");
+          }
+        }, 100);
+      } else {
+        post("ready", { version: 1 });
+      }
+    })();
+  </script>
+</body>
+</html>

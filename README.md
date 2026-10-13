@@ -1,10 +1,11 @@
 # DrawPad — Mac / iPad / 浏览器 / Obsidian 同步画板
 
-三种画板类型，四端互联：
+四种画板类型，四端互联：
 
 - **Excalidraw 画板**：无限画布，Mac 端内嵌**真正的 Excalidraw**（WKWebView + 官方引擎），具备 excalidraw.com 的全部能力：矩形/菱形/椭圆/箭头/线条/自由手绘/文字/图片、选择/移动/缩放/旋转、图层、样式面板（颜色/线宽/风格/透明度）、撤销重做、菜单导出 PNG/SVG/JSON。
 - **JSON Canvas**（`.canvas`）：节点图编辑器（React Flow），支持节点拖动、连线、分组、视口同步。
 - **白板**（`.whiteboard`）：分页式电视白板，**每一页都是一个完整的 Excalidraw 场景**。页面固定 1600×1200（4:3），底部页栏提供 ◀▶ 翻页、＋加页、－删页（两步确认）和适应页面；页码随文档同步，对端自动跟随翻页。
+- **Mermaid**（`.mermaid`）：写代码自动画图。左侧编辑 Mermaid 代码（等宽字体，Tab 缩进），右侧 600ms 防抖实时渲染预览；语法错误就地显示行号提示不阻塞编辑；工具条内置流程图/时序图/状态图/甘特图/饼图示例模板。窄屏（iPad 竖屏）自动切换上下分栏。AI 接口可直接写入代码（`set_scene` 支持 `{"code": "..."}` 或纯文本）。
 
 iPad 与 Mac 通过本地网络（Bonjour 自动发现）连接后，两端共享同一场景数据，**双向实时同步**：iPad 上画，Mac 立即显示；Mac 上编辑，iPad 实时刷新。白板的加页/删页/翻页不需要额外协议——整个分页文档作为一个场景同步。
 
@@ -56,6 +57,19 @@ cp -R /tmp/excal_bundle/excalidraw-assets <DrawPad>/SharedWeb/vendor/
 
 ### Mac 端
 Xcode 打开 `DrawPad.xcodeproj` → scheme **DrawPadMac** → ⌘R（本地 ad-hoc 签名即可）。
+
+日常开发用命令行构建时，**务必带 `SYMROOT=.build.noindex`**（产物目录名带 `.noindex` 后缀，Spotlight 不索引），否则项目内 `build/` 里的 .app 会被启动台收录，出现多个重复的 DrawPad 图标：
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project DrawPad.xcodeproj -target DrawPadMac \
+  -configuration Debug SYMROOT=.build.noindex build          # Mac
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project DrawPad.xcodeproj -target DrawPadPad \
+  -configuration Debug -destination "generic/platform=ios" SYMROOT=.build.noindex build   # iPad 产物
+# 部署到正式位置（启动台只保留这一个图标）：
+ditto .build.noindex/Debug/DrawPadMac.app /Applications/DrawPadMac.app && open /Applications/DrawPadMac.app
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun devicectl device install app \
+  --device <iPad-UDID> .build.noindex/Debug-iphoneos/DrawPad.app
+```
 
 ### iPad 真机
 1. iPad USB 连接，Xcode scheme **DrawPadPad**、目标选 iPad

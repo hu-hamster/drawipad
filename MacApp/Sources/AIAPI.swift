@@ -291,11 +291,20 @@ final class AIAPI {
                           let data = try? JSONSerialization.data(withJSONObject: array, options: [.sortedKeys]),
                           let string = String(data: data, encoding: .utf8) {
                     json = string
+                } else if let object = elements as? [String: Any],
+                          JSONSerialization.isValidJSONObject(object),
+                          let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+                          let string = String(data: data, encoding: .utf8) {
+                    // 对象格式（如 Mermaid 的 {"code": "..."}）
+                    json = string
                 } else {
-                    return ("400 Bad Request", ["error": "elements 需为数组或 JSON 字符串"])
+                    return ("400 Bad Request", ["error": "elements 需为数组、对象或 JSON 字符串"])
                 }
-                model.apiSetScene(boardID, elementsJSON: json)
-                return ("200 OK", ["ok": true, "elements": json])
+                let result = model.apiSetScene(boardID, elementsJSON: json)
+                if result.success {
+                    return ("200 OK", ["ok": true, "elements": json])
+                }
+                return ("400 Bad Request", ["error": result.message])
             default:
                 return ("405 Method Not Allowed", ["error": "不支持的方法"])
             }

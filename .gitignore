@@ -1,29 +1,29 @@
-# Xcode
-xcuserdata/
-*.xcuserstate
-xcarchives/
-DerivedData/
+# 构建产物
+.build.noindex/
 .build/
-
-# xcodegen
-*.xcodeproj
-
-# macOS
-.DS_Store
-
-# Obsidian plugin build output and installed dependencies
-ObsidianPlugin/node_modules/
-ObsidianPlugin/main.js
-WebBridge/node_modules/
-CanvasEditor/node_modules/
-
-# 生成产物
 build/
-
-# 本地 AI 工具会话文件
-.zcode/
-
-# Swift Package Manager（将来引入依赖时）
+DerivedData/
+xcarchives/
 .swiftpm/
 Package.resolved
 bin/__pycache__/
+
+# 前端依赖与产物
+CanvasEditor/node_modules/
+MermaidEditor/node_modules/
+WebBridge/node_modules/
+ObsidianPlugin/node_modules/
+node_modules/
+
+# Obsidian 插件构建产物（拷贝出的 Web 资产保留在版本控制外按需重建）
+ObsidianPlugin/main.js
+ObsidianPlugin/whiteboard.html
+ObsidianPlugin/mermaid.html
+ObsidianPlugin/vendor/
+
+# 系统与编辑器
+.DS_Store
+*.swp
+xcuserdata/
+*.xcuserstate
+.zcode/

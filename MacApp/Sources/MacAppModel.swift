@@ -183,6 +183,7 @@ final class MacAppModel: ObservableObject {
     private func emptyScene(for meta: PageMeta?) -> String {
         if meta?.isCanvas == true { return PageMeta.emptyCanvas }
         if meta?.isWhiteboard == true { return PageMeta.emptyWhiteboard }
+        if meta?.isMermaid == true { return PageMeta.emptyMermaid }
         return "[]"
     }
 
@@ -391,6 +392,8 @@ final class MacAppModel: ObservableObject {
 
         case .fileCreateWhiteboard(let folderID, let afterFileID):
             createPageFromPeer(folderID: folderID, afterFileID: afterFileID, fileExtension: "whiteboard")
+        case .fileCreateMermaid(let folderID, let afterFileID):
+            createPageFromPeer(folderID: folderID, afterFileID: afterFileID, fileExtension: "mermaid")
 
         case .fileDelete(let fileID):
             let wasCurrent = fileID == selectedPageID
@@ -698,12 +701,13 @@ final class MacAppModel: ObservableObject {
     }
     // MARK: - AI API 支持（AIAPI 调用，全部主线程）
 
-    /// AI 场景接口只支持 Excalidraw 画板；Canvas/白板的文档结构不同，
+    /// AI 场景接口的元素级操作只支持 Excalidraw 画板；Canvas/白板/Mermaid 的文档结构不同，
     /// 按数组解析会把原文档当空数据处理后整体覆盖，必须直接拒绝。
     private func aiBoardTypeError(_ boardID: UUID) -> String? {
         guard let meta = store.pageMeta(boardID) else { return "画板不存在" }
         if meta.isCanvas { return "Canvas 画板暂不支持 AI 元素操作" }
         if meta.isWhiteboard { return "白板暂不支持 AI 元素操作" }
+        if meta.isMermaid { return "Mermaid 画板请用 set_scene 直接写入代码（支持 {\"code\": \"...\"} 或纯文本）" }
         return nil
     }
 
@@ -729,13 +733,59 @@ final class MacAppModel: ObservableObject {
         return String(data: data, encoding: .utf8)
     }
 
+    /// 规范化 Mermaid 场景：接受 {"code": "..."} 对象或纯文本代码，输出 {"code": "...", "strokes": [...]} JSON。
+    /// AI 只写代码，已有的展示标注（strokes）从现有场景原样保留。
+    private func mermaidSceneJSON(from raw: String, existing: String?) -> String? {
+        var strokes: Any = []
+        if let existing,
+           let data = existing.data(using: .utf8),
+           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let kept = obj["strokes"], JSONSerialization.isValidJSONObject(kept) {
+            strokes = kept
+        }
+        let code: String
+        if let data = raw.data(using: .utf8),
+           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let value = obj["code"] as? String {
+            code = value
+        } else if let data = raw.data(using: .utf8),
+                  (try? JSONSerialization.jsonObject(with: data)) is [Any] {
+            return nil // JSON 数组不是合法的 Mermaid 输入
+        } else {
+            code = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let out = try? JSONSerialization.data(withJSONObject: ["code": code, "strokes": strokes], options: [.sortedKeys]) else { return nil }
+        return String(data: out, encoding: .utf8)
+    }
+
     /// 整体替换画板场景：落盘 + 画布应用 + iPad 同步。
-    func apiSetScene(_ boardID: UUID, elementsJSON: String) {
+    /// Excalidraw 接受元素数组；Mermaid 接受 {"code": "..."} 或纯文本代码。
+    /// 返回 (success, message)：拒绝时 HTTP 层据此回 400，而不是静默成功。
+    @discardableResult
+    func apiSetScene(_ boardID: UUID, elementsJSON: String) -> (success: Bool, message: String) {
+        if let meta = store.pageMeta(boardID), meta.isMermaid {
+            guard let outgoing = mermaidSceneJSON(from: elementsJSON, existing: store.sceneJSON(boardID)) else {
+                print("[DrawPad] apiSetScene 拒绝: Mermaid 文档格式无效")
+                return (false, "Mermaid 文档格式无效：需要 {\"code\": \"...\"} 或纯文本代码")
+            }
+            discardPendingSceneUpdate(for: [boardID]) // AI 强制写入后，旧的防抖推送不能再发出（会覆盖新场景）
+            store.forceWriteScene(outgoing, for: boardID)
+            if boardID == selectedPageID {
+                webView?.applyScene(outgoing)
+                if server.hasClient {
+                    server.send(.sceneUpdate(fileID: boardID, elementsJSON: outgoing))
+                }
+            }
+            pushLibrary()
+            return (true, "ok")
+        }
         if let error = aiBoardTypeError(boardID) {
             print("[DrawPad] apiSetScene 拒绝: \(error)")
-            return
+            return (false, error)
         }
-        guard (try? JSONSerialization.jsonObject(with: Data(elementsJSON.utf8))) is [Any] else { return }
+        guard (try? JSONSerialization.jsonObject(with: Data(elementsJSON.utf8))) is [Any] else {
+            return (false, "Excalidraw 场景需要元素数组")
+        }
         // AI 只操作元素；保留原有图片资源，避免整场景替换时丢图
         var outgoing = elementsJSON
         if let existing = store.sceneJSON(boardID),
@@ -743,6 +793,7 @@ final class MacAppModel: ObservableObject {
            let merged = excalidrawSceneJSON(elements: (try? JSONSerialization.jsonObject(with: Data(elementsJSON.utf8))) as? [[String: Any]] ?? [], files: parts.files) {
             outgoing = merged
         }
+        discardPendingSceneUpdate(for: [boardID]) // AI 强制写入后，旧的防抖推送不能再发出（会覆盖新场景）
         store.forceWriteScene(outgoing, for: boardID)
         if boardID == selectedPageID {
             webView?.applyScene(outgoing)
@@ -751,6 +802,7 @@ final class MacAppModel: ObservableObject {
             }
         }
         pushLibrary()
+        return (true, "ok")
     }
 
     /// 追加元素（支持简写展开，from/to 可引用现有元素）。
@@ -768,6 +820,7 @@ final class MacAppModel: ObservableObject {
         guard let json = excalidrawSceneJSON(elements: merged, files: parts.files) else {
             return (false, "序列化失败")
         }
+        discardPendingSceneUpdate(for: [boardID]) // AI 强制写入后，旧的防抖推送不能再发出（会覆盖新场景）
         store.forceWriteScene(json, for: boardID)
         if boardID == selectedPageID {
             webView?.applyScene(json)
@@ -799,6 +852,7 @@ final class MacAppModel: ObservableObject {
         guard let json = excalidrawSceneJSON(elements: filtered, files: parts.files) else {
             return (false, "序列化失败")
         }
+        discardPendingSceneUpdate(for: [boardID]) // AI 强制写入后，旧的防抖推送不能再发出（会覆盖新场景）
         store.forceWriteScene(json, for: boardID)
         if boardID == selectedPageID {
             webView?.applyScene(json)

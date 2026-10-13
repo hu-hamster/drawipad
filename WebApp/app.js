@@ -4,15 +4,21 @@
   const STORAGE_KEY = "drawpad-web-v2";
   const LEGACY_STORAGE_KEY = "drawpad-web-v1";
   const SWIFT_REFERENCE_DATE_UNIX = 978307200;
+  // 空文档常量必须在 state = loadState() 之前声明：
+  // normalizeState 对缺字段的页面会求值这些常量，放后面会触发 TDZ ReferenceError，
+  // 被 loadState 的 catch 吞掉后整库回退默认状态（数据"消失"）。
+  const EMPTY_WHITEBOARD = '{"pages":[[]],"currentPage":0}';
+  const EMPTY_MERMAID = '{"code":""}';
   const state = loadState();
   const lastSceneJSONByPage = new Map(
     state.pages.map((page) => [page.id, sceneJSON(page)]),
   );
   const canvasFrame = document.getElementById("canvas-app");
   const whiteboardFrame = document.getElementById("whiteboard-app");
-  const EMPTY_WHITEBOARD = '{"pages":[[]],"currentPage":0}';
+  const mermaidFrame = document.getElementById("mermaid-app");
   let canvasReady = false;
   let whiteboardReady = false;
+  let mermaidReady = false;
   let api = null;
   let socket = null;
   let suppressUntil = 0;
@@ -31,9 +37,11 @@
 
   function isCanvas(page) { return page?.fileExtension === "canvas"; }
   function isWhiteboard(page) { return page?.fileExtension === "whiteboard"; }
+  function isMermaid(page) { return page?.fileExtension === "mermaid"; }
   function emptyCanvas() { return { nodes: [], edges: [] }; }
   function sceneJSON(page) {
     if (isWhiteboard(page)) return page.whiteboard || EMPTY_WHITEBOARD;
+    if (isMermaid(page)) return page.mermaid || EMPTY_MERMAID;
     if (isCanvas(page)) return JSON.stringify(page.canvas || emptyCanvas());
     // Excalidraw：带 files（图片资源）的对象格式，旧数组数据在消费端兼容解析
     return JSON.stringify({ elements: page.elements || [], files: page.files || {} });
@@ -55,13 +63,17 @@
   function sendWhiteboardCommand(name, data) {
     if (whiteboardReady) whiteboardFrame.contentWindow?.postMessage({ drawpadCanvasCommand: true, name, data }, location.origin);
   }
-  /// 切页前同步拉取当前编辑器的未提交内容（Canvas/白板的 iframe 有 100ms 防抖，直接问它要最新场景）
+  function sendMermaidCommand(name, data) {
+    if (mermaidReady) mermaidFrame.contentWindow?.postMessage({ drawpadCanvasCommand: true, name, data }, location.origin);
+  }
+  /// 切页前同步拉取当前编辑器的未提交内容（Canvas/白板/Mermaid 的 iframe 有防抖，直接问它要最新场景）
   function flushActiveEditorScene() {
     const page = currentPage();
     if (!page) return;
-    const push = (raw, validator) => {
+    const push = (raw, validator, apply) => {
       if (typeof raw !== "string" || raw === lastSceneJSONByPage.get(page.id)) return;
       if (!validator(raw)) return;
+      apply(raw); // 写回 page 字段，否则重载/切页会把最后一段编辑回滚掉
       lastSceneJSONByPage.set(page.id, raw);
       page.updatedAt = Date.now();
       persist();
@@ -69,10 +81,13 @@
     };
     if (isCanvas(page) && !canvasFrame.hidden) {
       const raw = canvasFrame.contentWindow?.__getScene?.();
-      push(raw, (r) => { const v = JSON.parse(r); return v && Array.isArray(v.nodes) && Array.isArray(v.edges); });
+      push(raw, (r) => { const v = JSON.parse(r); return v && Array.isArray(v.nodes) && Array.isArray(v.edges); }, (r) => { page.canvas = JSON.parse(r); });
     } else if (isWhiteboard(page) && !whiteboardFrame.hidden) {
       const raw = whiteboardFrame.contentWindow?.__getScene?.();
-      push(raw, (r) => { const v = JSON.parse(r); return v && Array.isArray(v.pages) && v.pages.length > 0; });
+      push(raw, (r) => { const v = JSON.parse(r); return v && Array.isArray(v.pages) && v.pages.length > 0; }, (r) => { page.whiteboard = r; });
+    } else if (isMermaid(page) && !mermaidFrame.hidden) {
+      const raw = mermaidFrame.contentWindow?.__getScene?.();
+      push(raw, (r) => { const v = JSON.parse(r); return v && typeof v.code === "string"; }, (r) => { page.mermaid = r; });
     }
   }
 
@@ -115,6 +130,7 @@
       try {
         if (raw && raw.length > 2) localStorage.setItem(`${STORAGE_KEY}.corrupt`, raw);
       } catch (_) {}
+      window.__dpadLoadError = String(error && error.stack || error);
       console.error("[DrawPad] 图库数据解析失败，原始数据已备份到 ${STORAGE_KEY}.corrupt", error);
     }
     return makeDefaultState();
@@ -136,12 +152,13 @@
       name: page.name || "未命名画板",
       createdAt: page.createdAt || Date.now(),
       updatedAt: page.updatedAt || Date.now(),
-      fileExtension: page.fileExtension === "canvas" ? "canvas" : (page.fileExtension === "whiteboard" ? "whiteboard" : undefined),
+      fileExtension: page.fileExtension === "canvas" ? "canvas" : (page.fileExtension === "whiteboard" ? "whiteboard" : (page.fileExtension === "mermaid" ? "mermaid" : undefined)),
       elements: Array.isArray(page.elements) ? page.elements : [],
       files: page.files && typeof page.files === "object" && !Array.isArray(page.files) ? page.files : {},
       canvas: page.canvas && typeof page.canvas === "object" && Array.isArray(page.canvas.nodes) && Array.isArray(page.canvas.edges)
         ? page.canvas : emptyCanvas(),
       whiteboard: typeof page.whiteboard === "string" ? page.whiteboard : EMPTY_WHITEBOARD,
+      mermaid: typeof page.mermaid === "string" ? page.mermaid : EMPTY_MERMAID,
     }));
     const hadTabState = Array.isArray(value.openPageIDs);
     value.openPageIDs = hadTabState
@@ -215,7 +232,7 @@
         updatedAt: swiftDate(page.updatedAt),
         width: 1366,
         height: 1024,
-        fileExtension: isCanvas(page) ? "canvas" : (isWhiteboard(page) ? "whiteboard" : undefined),
+        fileExtension: isCanvas(page) ? "canvas" : (isWhiteboard(page) ? "whiteboard" : (isMermaid(page) ? "mermaid" : undefined)),
       })),
     };
   }
@@ -273,6 +290,7 @@
       { label: "新建画板", action: () => createPage(folder.id) },
       { label: "新建 Canvas", action: () => createPage(folder.id, null, "canvas") },
       { label: "新建白板", action: () => createPage(folder.id, null, "whiteboard") },
+      { label: "新建 Mermaid", action: () => createPage(folder.id, null, "mermaid") },
       { label: "新建子目录…", action: () => createFolder(folder.id) },
       null,
       { label: "重命名目录…", action: () => renameFolder(folder.id) },
@@ -281,7 +299,7 @@
   }
 
   function pageMenu(page) {
-    const kind = isCanvas(page) ? "Canvas" : (isWhiteboard(page) ? "白板" : "画板");
+    const kind = isCanvas(page) ? "Canvas" : (isWhiteboard(page) ? "白板" : (isMermaid(page) ? "Mermaid" : "画板"));
     return [
       { label: `打开${kind}`, action: () => openPage(page.id, true) },
       { label: `重命名${kind}…`, action: () => renamePage(page.id) },
@@ -350,7 +368,7 @@
         };
         const pageButton = document.createElement("button");
         pageButton.className = "page-name";
-        pageButton.textContent = `${isCanvas(page) ? "▣" : (isWhiteboard(page) ? "▤" : "〰")} ${page.name}`;
+        pageButton.textContent = `${isCanvas(page) ? "▣" : (isWhiteboard(page) ? "▤" : (isMermaid(page) ? "◈" : "〰"))} ${page.name}`;
         pageButton.onclick = () => openPage(page.id, true);
         pageButton.ondblclick = () => renamePage(page.id);
         pageRow.append(pageButton);
@@ -379,7 +397,7 @@
       title.role = "tab";
       title.ariaSelected = String(sameID(page.id, state.currentPageID));
       title.title = page.name;
-      title.textContent = `${isCanvas(page) ? "▣" : (isWhiteboard(page) ? "▤" : "〰")} ${page.name}`;
+      title.textContent = `${isCanvas(page) ? "▣" : (isWhiteboard(page) ? "▤" : (isMermaid(page) ? "◈" : "〰"))} ${page.name}`;
       title.onclick = () => openPage(page.id, true);
       const close = document.createElement("button");
       close.className = "tab-close";
@@ -425,15 +443,18 @@
   function applyScene(page = currentPage()) {
     const canvas = isCanvas(page);
     const whiteboard = isWhiteboard(page);
-    document.getElementById("app").hidden = !page || canvas || whiteboard;
+    const mermaid = isMermaid(page);
+    document.getElementById("app").hidden = !page || canvas || whiteboard || mermaid;
     canvasFrame.hidden = !page || !canvas;
     whiteboardFrame.hidden = !page || !whiteboard;
+    mermaidFrame.hidden = !page || !mermaid;
     document.getElementById("empty-detail").hidden = Boolean(page);
     if (!page) return;
     lastSceneJSONByPage.set(page.id, sceneJSON(page));
     suppressUntil = Date.now() + 300;
     if (canvas) sendCanvasCommand("applyScene", sceneJSON(page));
     else if (whiteboard) sendWhiteboardCommand("__applyScene", sceneJSON(page));
+    else if (mermaid) sendMermaidCommand("__applyScene", sceneJSON(page));
     else api?.updateScene({ elements: page.elements, files: page.files || {} });
   }
 
@@ -490,6 +511,10 @@
       sendWhiteboardCommand("__getViewport", null);
       return;
     }
+    if (isMermaid(currentPage())) {
+      sendMermaidCommand("__getViewport", null);
+      return;
+    }
     const viewport = currentViewport();
     if (!viewport) return;
     lastSentViewport = viewport;
@@ -532,6 +557,10 @@
       sendWhiteboardCommand("__applyViewportPan", { cx: centerX, cy: centerY });
       return;
     }
+    if (isMermaid(currentPage())) {
+      sendMermaidCommand("__applyViewportPan", { cx: centerX, cy: centerY });
+      return;
+    }
     if (!api) return;
     const viewport = currentViewport();
     if (!viewport) return;
@@ -551,6 +580,13 @@
     }
     if (isWhiteboard(currentPage())) {
       sendWhiteboardCommand("__applyViewportZoom", {
+        z: value.zoom, cx: value.centerX, cy: value.centerY, vw: value.viewWidth, vh: value.viewHeight,
+      });
+      return;
+    }
+    if (isMermaid(currentPage())) {
+      // mermaid 的缩放相对图的原始尺寸，直接透传不做屏幕比例换算
+      sendMermaidCommand("__applyViewportZoom", {
         z: value.zoom, cx: value.centerX, cy: value.centerY, vw: value.viewWidth, vh: value.viewHeight,
       });
       return;
@@ -611,6 +647,8 @@
   function closeTab(pageID) {
     const index = state.openPageIDs.findIndex((id) => sameID(id, pageID));
     if (index < 0) return;
+    // 关闭的是当前页时，先把编辑器未提交的防抖内容落盘（openPage 内部也会做，但走到这里的路径不一定经过它）
+    if (sameID(state.currentPageID, pageID)) flushActiveEditorScene();
     state.openPageIDs.splice(index, 1);
     const wasCurrent = sameID(state.currentPageID, pageID);
     if (wasCurrent) {
@@ -708,13 +746,15 @@
   function uniquePageName(folderID, type = "excalidraw") {
     const names = new Set(pagesInFolder(folderID).map((page) => page.name));
     let index = 1;
-    const prefix = type === "canvas" ? "Canvas" : (type === "whiteboard" ? "白板" : "画板");
+    const prefix = type === "canvas" ? "Canvas" : (type === "whiteboard" ? "白板" : (type === "mermaid" ? "Mermaid" : "画板"));
     let name = `${prefix} ${index}`;
     while (names.has(name)) name = `${prefix} ${++index}`;
     return name;
   }
 
   function createPage(folderID = state.currentFolderID, afterPageID = state.currentPageID, type = "excalidraw") {
+    // 新画板会成为当前页：先把当前编辑器未提交的防抖内容落盘/推送，否则切走即丢稿
+    flushActiveEditorScene();
     const folder = folderByID(folderID) || state.folders[0];
     if (!folder) {
       window.alert("请先新建目录");
@@ -724,8 +764,8 @@
     const page = {
       id: crypto.randomUUID(), folderID: folder.id, name: uniquePageName(folder.id, type),
       createdAt: now, updatedAt: now,
-      fileExtension: type === "canvas" ? "canvas" : (type === "whiteboard" ? "whiteboard" : undefined),
-      elements: [], canvas: emptyCanvas(), whiteboard: EMPTY_WHITEBOARD,
+      fileExtension: type === "canvas" ? "canvas" : (type === "whiteboard" ? "whiteboard" : (type === "mermaid" ? "mermaid" : undefined)),
+      elements: [], canvas: emptyCanvas(), whiteboard: EMPTY_WHITEBOARD, mermaid: EMPTY_MERMAID,
     };
     const afterIndex = afterPageID
       ? state.pages.findIndex((item) => sameID(item.id, afterPageID))
@@ -784,7 +824,7 @@
   function deletePage(pageID = state.currentPageID, confirmDelete = true) {
     const page = state.pages.find((item) => sameID(item.id, pageID));
     if (!page) return;
-    if (confirmDelete && !window.confirm(`删除${isCanvas(page) ? "Canvas" : (isWhiteboard(page) ? "白板" : "画板")}“${page.name}”？`)) return;
+    if (confirmDelete && !window.confirm(`删除${isCanvas(page) ? "Canvas" : (isWhiteboard(page) ? "白板" : (isMermaid(page) ? "Mermaid" : "画板"))}“${page.name}”？`)) return;
     const wasCurrent = sameID(state.currentPageID, page.id);
     const siblings = pagesInFolder(page.folderID);
     const siblingIndex = siblings.findIndex((item) => item.id === page.id);
@@ -820,6 +860,8 @@
       createPage(message.fileCreateCanvas.folderID, message.fileCreateCanvas.afterFileID, "canvas");
     } else if (message.fileCreateWhiteboard) {
       createPage(message.fileCreateWhiteboard.folderID, message.fileCreateWhiteboard.afterFileID, "whiteboard");
+    } else if (message.fileCreateMermaid) {
+      createPage(message.fileCreateMermaid.folderID, message.fileCreateMermaid.afterFileID, "mermaid");
     } else if (message.fileDelete) {
       deletePage(message.fileDelete.fileID, false);
     } else if (message.viewportPanChanged) {
@@ -840,6 +882,9 @@
         if (isWhiteboard(page)) {
           if (!incoming || !Array.isArray(incoming.pages) || !incoming.pages.length) return;
           page.whiteboard = message.sceneUpdate.elementsJSON;
+        } else if (isMermaid(page)) {
+          if (!incoming || typeof incoming.code !== "string") return;
+          page.mermaid = message.sceneUpdate.elementsJSON;
         } else if (isCanvas(page)) {
           if (!incoming || !Array.isArray(incoming.nodes) || !Array.isArray(incoming.edges)) return;
           page.canvas = incoming;
@@ -896,12 +941,56 @@
   }
 
   document.getElementById("new-folder").onclick = () => createFolder(null);
+
+  // 侧边栏宽度拖拽：向左可收窄（下限 150px），向右最多恢复到默认宽度（宽屏 300 / 窄屏 230）；双击复位
+  (function initSidebarResizer() {
+    const sidebar = document.querySelector(".sidebar");
+    const resizer = document.getElementById("sidebar-resizer");
+    if (!sidebar || !resizer) return;
+    const MIN_W = 150;
+    const defaultWidth = () => (window.innerWidth <= 640 ? 230 : 300);
+    const clampWidth = (w) => Math.min(defaultWidth(), Math.max(MIN_W, w));
+    const saved = parseFloat(localStorage.getItem("drawpad-sidebar-w"));
+    if (isFinite(saved)) sidebar.style.width = clampWidth(saved) + "px";
+    resizer.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      resizer.setPointerCapture(event.pointerId);
+      resizer.classList.add("active");
+      document.body.classList.add("sidebar-resizing"); // 拖拽期间让画布 iframe 不吞鼠标
+      const baseLeft = sidebar.getBoundingClientRect().left;
+      const onMove = (move) => {
+        sidebar.style.width = clampWidth(move.clientX - baseLeft) + "px";
+      };
+      const onUp = () => {
+        resizer.removeEventListener("pointermove", onMove);
+        resizer.removeEventListener("pointerup", onUp);
+        resizer.removeEventListener("pointercancel", onUp);
+        resizer.classList.remove("active");
+        document.body.classList.remove("sidebar-resizing");
+        const width = parseFloat(sidebar.style.width);
+        if (isFinite(width)) localStorage.setItem("drawpad-sidebar-w", String(width));
+      };
+      resizer.addEventListener("pointermove", onMove);
+      resizer.addEventListener("pointerup", onUp);
+      resizer.addEventListener("pointercancel", onUp);
+    });
+    resizer.addEventListener("dblclick", () => {
+      sidebar.style.width = "";
+      localStorage.removeItem("drawpad-sidebar-w");
+    });
+    window.addEventListener("resize", () => {
+      // 窗口跨过窄屏断点时重新钳制，保证不超过新的默认宽度
+      const width = parseFloat(sidebar.style.width);
+      if (isFinite(width)) sidebar.style.width = clampWidth(width) + "px";
+    });
+  })();
   document.getElementById("new-tab").onclick = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     showContextMenu(rect.left, rect.bottom, [
       { label: "新建画板", action: () => createPage() },
       { label: "新建 Canvas", action: () => createPage(state.currentFolderID, null, "canvas") },
       { label: "新建白板", action: () => createPage(state.currentFolderID, null, "whiteboard") },
+      { label: "新建 Mermaid", action: () => createPage(state.currentFolderID, null, "mermaid") },
     ]);
   };
   document.querySelector(".sidebar").addEventListener("contextmenu", (event) => {
@@ -913,6 +1002,7 @@
         { label: "新建画板", action: () => createPage() },
         { label: "新建 Canvas", action: () => createPage(state.currentFolderID, null, "canvas") },
         { label: "新建白板", action: () => createPage(state.currentFolderID, null, "whiteboard") },
+        { label: "新建 Mermaid", action: () => createPage(state.currentFolderID, null, "mermaid") },
       ] : []),
     ]);
   });
@@ -928,14 +1018,16 @@
     if (event.origin !== location.origin) return;
     const fromCanvas = event.source === canvasFrame.contentWindow;
     const fromWhiteboard = event.source === whiteboardFrame.contentWindow;
-    if (!fromCanvas && !fromWhiteboard) return;
+    const fromMermaid = event.source === mermaidFrame.contentWindow;
+    if (!fromCanvas && !fromWhiteboard && !fromMermaid) return;
     const packet = event.data;
     if (!packet?.drawpadCanvas) return;
     if (packet.name === "ready") {
       if (fromCanvas) canvasReady = true;
       if (fromWhiteboard) whiteboardReady = true;
+      if (fromMermaid) mermaidReady = true;
       const page = currentPage();
-      if ((fromCanvas && isCanvas(page)) || (fromWhiteboard && isWhiteboard(page))) {
+      if ((fromCanvas && isCanvas(page)) || (fromWhiteboard && isWhiteboard(page)) || (fromMermaid && isMermaid(page))) {
         applyScene();
         sendCurrentViewport();
       }
@@ -948,6 +1040,20 @@
           if (!doc || !Array.isArray(doc.pages) || !doc.pages.length) return;
           if (packet.data === lastSceneJSONByPage.get(page.id)) return;
           page.whiteboard = packet.data;
+          page.updatedAt = Date.now();
+          lastSceneJSONByPage.set(page.id, packet.data);
+          persist();
+          sendServerMessage({ sceneUpdate: { fileID: page.id, elementsJSON: packet.data } });
+        } catch (_) {}
+        return;
+      }
+      if (fromMermaid) {
+        if (!isMermaid(page)) return;
+        try {
+          const doc = JSON.parse(packet.data);
+          if (!doc || typeof doc.code !== "string") return;
+          if (packet.data === lastSceneJSONByPage.get(page.id)) return;
+          page.mermaid = packet.data;
           page.updatedAt = Date.now();
           lastSceneJSONByPage.set(page.id, packet.data);
           persist();
@@ -968,7 +1074,7 @@
       } catch (_) {}
     } else if (packet.name === "viewportPan" || packet.name === "viewportZoom") {
       const page = currentPage();
-      if (!isCanvas(page) && !isWhiteboard(page)) return;
+      if (!isCanvas(page) && !isWhiteboard(page) && !isMermaid(page)) return;
       try {
         const value = JSON.parse(packet.data);
         const viewport = { centerX: value.cx, centerY: value.cy, zoom: value.z, viewWidth: value.vw, viewHeight: value.vh };
@@ -977,6 +1083,11 @@
       } catch (_) {}
     }
   });
+  // 页面关闭/刷新前提交编辑器未保存内容（各编辑器有 100–600ms 防抖，不提交就丢最后一段输入）
+  window.addEventListener("pagehide", () => {
+    try { flushActiveEditorScene(); } catch (_) {}
+  });
+
   // 兜底：iframe 的 ready 可能在本页监听器注册之前就已发出（缓存加载竞态），导致场景永远不下发。
   // 轮询同源 iframe 的桥函数，发现已就绪但 ready 标志仍为 false 时直接应用场景。
   (function ensureEditorBridge() {
@@ -992,6 +1103,12 @@
         }
         if (isWhiteboard(page) && !whiteboardReady && whiteboardFrame.contentWindow?.__applyScene) {
           whiteboardReady = true;
+          applyScene(page);
+          sendCurrentViewport();
+          return;
+        }
+        if (isMermaid(page) && !mermaidReady && mermaidFrame.contentWindow?.__applyScene) {
+          mermaidReady = true;
           applyScene(page);
           sendCurrentViewport();
           return;
@@ -1016,7 +1133,7 @@
         sendCurrentViewport();
       },
       onChange: (elements, appState, files) => {
-        if (isCanvas(currentPage()) || isWhiteboard(currentPage())) return;
+        if (isCanvas(currentPage()) || isWhiteboard(currentPage()) || isMermaid(currentPage())) return;
         handleViewportChange(appState);
         if (Date.now() < suppressUntil) return;
         const page = currentPage();

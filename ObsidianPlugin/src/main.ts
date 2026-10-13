@@ -11,8 +11,9 @@ import {
 import { VaultLibrary } from "./library";
 import { DrawPadServer, PairingRequest } from "./server";
 import { ClientMessage, DRAW_PAD_PROTOCOL_VERSION, LibrarySnapshot, ServerMessage } from "./protocol";
-import { isCanvasPath, isDrawingPath, isWhiteboardPath, parseCanvas, parseWhiteboard } from "./scene";
+import { isCanvasPath, isDrawingPath, isMermaidPath, isWhiteboardPath, parseCanvas, parseIncomingScene, parseMermaid, parseWhiteboard } from "./scene";
 import { WhiteboardView, WHITEBOARD_VIEW_TYPE } from "./whiteboardView";
+import { MermaidView, MERMAID_VIEW_TYPE } from "./mermaidView";
 
 interface DrawPadSettings {
   startOnStartup: boolean;
@@ -37,6 +38,7 @@ interface ExcalidrawAPILike {
   updateScene(scene: {
     appState?: Record<string, unknown>;
     elements?: unknown[];
+    files?: Record<string, unknown>;
     commitToHistory?: boolean;
   }): void;
 }
@@ -98,7 +100,19 @@ export default class DrawPadSyncPlugin extends Plugin {
   private sceneSuppressUntil = 0;
   private announcedPageID: string | null = null;
   private fileOpenGeneration = 0;
-  private whiteboardSaves = new Map<TFile, { json: string; timer: number }>();
+  private whiteboardSaves = new Map<TFile, { json: string; timer: number; epoch: number }>();
+  private mermaidSaves = new Map<TFile, { json: string; timer: number; epoch: number }>();
+  // 远端更新代际：sceneUpdate 到达时递增。本地 400ms 延迟保存若在此之后触发，
+  // 说明它捕获的是更旧的内容，直接丢弃，避免旧任务覆盖新场景。
+  private remoteEpochs = new Map<string, number>();
+
+  private bumpRemoteEpoch(file: TFile): void {
+    this.remoteEpochs.set(file.path, (this.remoteEpochs.get(file.path) ?? 0) + 1);
+  }
+
+  private remoteEpochOf(file: TFile): number {
+    return this.remoteEpochs.get(file.path) ?? 0;
+  }
 
   async onload(): Promise<void> {
     const raw = await this.loadData();
@@ -139,15 +153,33 @@ export default class DrawPadSyncPlugin extends Plugin {
         onReady: (view) => void this.handleWhiteboardReady(view),
         onSceneChange: (view, docJSON) => this.handleWhiteboardSceneChange(view, docJSON),
         onViewport: (view, viewport, zoomChanged) => this.handleWhiteboardViewport(view, viewport, zoomChanged),
+        onFileLoaded: (view) => void this.handleWhiteboardReady(view),
       },
     ));
     this.registerExtensions(["whiteboard"], WHITEBOARD_VIEW_TYPE);
+    this.registerView(MERMAID_VIEW_TYPE, (leaf) => new MermaidView(
+      leaf,
+      this.pluginResourcePath(),
+      {
+        onReady: (view) => void this.handleMermaidReady(view),
+        onSceneChange: (view, docJSON) => this.handleMermaidSceneChange(view, docJSON),
+        onFileLoaded: (view) => void this.handleMermaidReady(view),
+      },
+    ));
+    this.registerExtensions(["mermaid"], MERMAID_VIEW_TYPE);
     this.registerDomEvent(window, "message", (event: MessageEvent) => {
       const packet = (event.data ?? {}) as { drawpadCanvas?: boolean; name?: string; data?: unknown };
       if (packet.drawpadCanvas !== true || typeof packet.name !== "string") return;
       for (const leaf of this.app.workspace.getLeavesOfType(WHITEBOARD_VIEW_TYPE)) {
         const view = leaf.view;
         if (view instanceof WhiteboardView && view.matchesSource(event.source as Window | null)) {
+          view.handlePacket(packet.name, packet.data);
+          return;
+        }
+      }
+      for (const leaf of this.app.workspace.getLeavesOfType(MERMAID_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (view instanceof MermaidView && view.matchesSource(event.source as Window | null)) {
           view.handlePacket(packet.name, packet.data);
           return;
         }
@@ -196,6 +228,7 @@ export default class DrawPadSyncPlugin extends Plugin {
   onunload(): void {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.flushWhiteboardSaves();
+    this.flushMermaidSaves();
     this.detachSceneSubscription();
     this.server?.stop();
   }
@@ -278,6 +311,11 @@ export default class DrawPadSyncPlugin extends Plugin {
         await this.sendLibrary();
         await this.library.openPage(page.id);
         await this.sendFileOpened(page.id);
+      } else if ("fileCreateMermaid" in message) {
+        const page = await this.library.createPage(message.fileCreateMermaid.folderID, message.fileCreateMermaid.afterFileID, "mermaid");
+        await this.sendLibrary();
+        await this.library.openPage(page.id);
+        await this.sendFileOpened(page.id);
       } else if ("fileDelete" in message) {
         const current = this.library.currentPageID();
         const deletedID = message.fileDelete.fileID;
@@ -316,12 +354,28 @@ export default class DrawPadSyncPlugin extends Plugin {
           if (!whiteboard) throw new Error("白板文档数据无效");
           const pageKey = message.sceneUpdate.fileID.toLowerCase();
           this.lastSceneJSONByPage.set(pageKey, whiteboard);
+          const pageFile = this.library.getPageFile(message.sceneUpdate.fileID);
+          if (pageFile) this.bumpRemoteEpoch(pageFile);
           const view = this.activeWhiteboardView();
           // 无论是否正在查看，都必须落盘；活动视图额外应用显示
           if (sameID(this.library.currentPageID(), message.sceneUpdate.fileID) && view) {
             view.applyScene(whiteboard);
           }
           await this.library.updateScene(message.sceneUpdate.fileID, whiteboard);
+          return;
+        }
+        if (this.library.isMermaidPage(message.sceneUpdate.fileID)) {
+          const mermaid = parseMermaid(message.sceneUpdate.elementsJSON);
+          if (!mermaid) throw new Error("Mermaid 文档数据无效");
+          const pageKey = message.sceneUpdate.fileID.toLowerCase();
+          this.lastSceneJSONByPage.set(pageKey, mermaid);
+          const pageFile = this.library.getPageFile(message.sceneUpdate.fileID);
+          if (pageFile) this.bumpRemoteEpoch(pageFile);
+          const view = this.activeMermaidView();
+          if (sameID(this.library.currentPageID(), message.sceneUpdate.fileID) && view) {
+            view.applyScene(mermaid);
+          }
+          await this.library.updateScene(message.sceneUpdate.fileID, mermaid);
           return;
         }
         if (this.library.isCanvasPage(message.sceneUpdate.fileID)) {
@@ -419,6 +473,10 @@ export default class DrawPadSyncPlugin extends Plugin {
       // 白板编辑器的变化由视图的 sceneChange 回调主动推送，无需轮询。
       return;
     }
+    if (pageID && this.library.isMermaidPage(pageID)) {
+      // Mermaid 编辑器的变化由视图的 sceneChange 回调主动推送，无需轮询。
+      return;
+    }
     const view = this.activeExcalidrawView();
     const api = view?.excalidrawAPI;
     if (!pageID || !api) return;
@@ -487,6 +545,68 @@ export default class DrawPadSyncPlugin extends Plugin {
     return null;
   }
 
+  private activeMermaidView(): MermaidView | null {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || !isMermaidPath(activeFile.path)) return null;
+    for (const leaf of this.app.workspace.getLeavesOfType(MERMAID_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view instanceof MermaidView && view.file?.path === activeFile.path) return view;
+    }
+    return null;
+  }
+
+  // MARK: Mermaid 视图（iframe 编辑器）事件
+
+  private async handleMermaidReady(view: MermaidView): Promise<void> {
+    const file = view.file;
+    if (!file) return;
+    const pageID = this.library.currentPageID();
+    if (!pageID || !this.library.isMermaidPage(pageID)) return;
+    const pageFile = this.library.getPageFile(pageID);
+    if (!pageFile || pageFile.path !== file.path) return;
+    const json = await this.library.readScene(pageID);
+    this.lastSceneJSONByPage.set(pageID.toLowerCase(), json);
+    view.applyScene(json);
+    if (this.server?.clientName) void this.sendFileOpened(pageID);
+  }
+
+  private handleMermaidSceneChange(view: MermaidView, docJSON: string): void {
+    const file = view.file;
+    if (!file) return;
+    if (parseMermaid(docJSON) === null) return;
+    this.scheduleMermaidSave(file, docJSON);
+    if (!this.server?.clientName) return;
+    const pageID = this.library.currentPageID();
+    if (!pageID || !this.library.isMermaidPage(pageID)) return;
+    const pageFile = this.library.getPageFile(pageID);
+    if (!pageFile || pageFile.path !== file.path) return;
+    const key = pageID.toLowerCase();
+    if (this.lastSceneJSONByPage.get(key) === docJSON) return;
+    this.lastSceneJSONByPage.set(key, docJSON);
+    this.server.send({ sceneUpdate: { fileID: pageID, elementsJSON: docJSON } });
+  }
+
+  private scheduleMermaidSave(file: TFile, docJSON: string): void {
+    const pending = this.mermaidSaves.get(file);
+    if (pending) window.clearTimeout(pending.timer);
+    const epoch = this.remoteEpochOf(file);
+    const timer = window.setTimeout(() => {
+      if (this.remoteEpochOf(file) !== epoch) return; // 远端已有更新内容，丢弃过期本地保存
+      this.mermaidSaves.delete(file);
+      void this.app.vault.modify(file, docJSON);
+    }, 400);
+    this.mermaidSaves.set(file, { json: docJSON, timer, epoch });
+  }
+
+  private flushMermaidSaves(): void {
+    for (const [file, pending] of this.mermaidSaves) {
+      window.clearTimeout(pending.timer);
+      if (this.remoteEpochOf(file) !== pending.epoch) continue;
+      void this.app.vault.modify(file, pending.json);
+    }
+    this.mermaidSaves.clear();
+  }
+
   // MARK: 白板视图（iframe 编辑器）事件
 
   private async handleWhiteboardReady(view: WhiteboardView): Promise<void> {
@@ -545,16 +665,19 @@ export default class DrawPadSyncPlugin extends Plugin {
   private scheduleWhiteboardSave(file: TFile, docJSON: string): void {
     const pending = this.whiteboardSaves.get(file);
     if (pending) window.clearTimeout(pending.timer);
+    const epoch = this.remoteEpochOf(file);
     const timer = window.setTimeout(() => {
+      if (this.remoteEpochOf(file) !== epoch) return; // 远端已有更新内容，丢弃过期本地保存
       this.whiteboardSaves.delete(file);
       void this.app.vault.modify(file, docJSON);
     }, 400);
-    this.whiteboardSaves.set(file, { json: docJSON, timer });
+    this.whiteboardSaves.set(file, { json: docJSON, timer, epoch });
   }
 
   private flushWhiteboardSaves(): void {
     for (const [file, pending] of this.whiteboardSaves) {
       window.clearTimeout(pending.timer);
+      if (this.remoteEpochOf(file) !== pending.epoch) continue;
       void this.app.vault.modify(file, pending.json);
     }
     this.whiteboardSaves.clear();
@@ -568,11 +691,16 @@ export default class DrawPadSyncPlugin extends Plugin {
     if (!api) return false;
 
     try {
-      const elements: unknown = JSON.parse(elementsJSON);
-      if (!Array.isArray(elements)) return false;
+      // 兼容旧格式（元素数组）与新格式（{elements, files}），files 一并传给编辑器避免丢图
+      const incoming = parseIncomingScene(elementsJSON);
+      if (!incoming) return false;
       this.lastSceneJSONByPage.set(pageID.toLowerCase(), elementsJSON);
       this.sceneSuppressUntil = Date.now() + 200;
-      api.updateScene({ elements, commitToHistory: true });
+      api.updateScene({
+        elements: incoming.elements,
+        ...(incoming.files ? { files: incoming.files } : {}),
+        commitToHistory: true,
+      });
       return true;
     } catch {
       // 持久化路径会返回更具体的错误，不在此处重复提示。
@@ -635,6 +763,10 @@ export default class DrawPadSyncPlugin extends Plugin {
     if (pageID && this.library.isWhiteboardPage(pageID)) {
       // 白板视口由视图回调推送；只处理待应用的对端视口。
       if (this.pendingViewport) this.applyPendingViewport();
+      return;
+    }
+    if (pageID && this.library.isMermaidPage(pageID)) {
+      // Mermaid 是静态预览，没有可同步的视口。
       return;
     }
     const view = this.activeExcalidrawView();

@@ -9,9 +9,12 @@ import {
 import {
   emptyExcalidrawMarkdown,
   isCanvasPath,
+  isMermaidPath,
   isWhiteboardPath,
   parseCanvas,
   parseExcalidraw,
+  parseIncomingScene,
+  parseMermaid,
   parseWhiteboard,
   replaceElements,
 } from "../src/scene.ts";
@@ -46,6 +49,53 @@ test("whiteboard documents parse and reject invalid shapes", () => {
   assert.equal(parseWhiteboard('[1,2]'), null);
   // 越界 currentPage 会被钳制到最后一页
   assert.equal(parseWhiteboard('{"pages":[[],[]],"currentPage":9}'), '{"pages":[[],[]],"currentPage":1}');
+});
+
+test("incoming scenes accept legacy arrays and {elements, files} objects", () => {
+  // 旧格式：元素数组
+  assert.deepEqual(parseIncomingScene('[{"id":"a"}]'), { elements: [{ id: "a" }], files: null });
+  // 新格式：{elements, files}
+  const incoming = parseIncomingScene('{"elements":[{"id":"b"}],"files":{"f1":{"dataUrl":"x"}}}');
+  assert.deepEqual(incoming.elements, [{ id: "b" }]);
+  assert.deepEqual(incoming.files, { f1: { dataUrl: "x" } });
+  // 非法形状
+  assert.equal(parseIncomingScene('{"code":"graph"}'), null);
+  assert.equal(parseIncomingScene("not json"), null);
+});
+
+test("replaceElements merges {elements, files} updates and keeps existing images", () => {
+  const source = emptyExcalidrawMarkdown();
+  const parsed = parseExcalidraw(source);
+  assert.ok(parsed);
+  const next = replaceElements(
+    source,
+    JSON.stringify({ elements: [{ id: "n1", type: "rectangle" }], files: { img2: { dataUrl: "y" } } }),
+    parsed,
+  );
+  const reparsed = parseExcalidraw(next);
+  assert.ok(reparsed, "替换后的文档应可重新解析");
+  // elements 更新 + files 合并（图片不丢）
+  assert.deepEqual(reparsed.document.elements, [{ id: "n1", type: "rectangle" }]);
+  assert.deepEqual(reparsed.document.files, { img2: { dataUrl: "y" } });
+  // 旧格式（纯数组）仍然可用
+  const legacy = replaceElements(source, '[{"id":"n2"}]', parsed);
+  const legacyParsed = parseExcalidraw(legacy);
+  assert.deepEqual(legacyParsed?.document.elements, [{ id: "n2" }]);
+});
+
+test("mermaid documents parse and reject invalid shapes", () => {
+  assert.equal(isMermaidPath("笔记/架构.mermaid"), true);
+  assert.equal(isMermaidPath("笔记/画板.excalidraw"), false);
+  assert.equal(parseMermaid('{"code":"graph LR\\n  A-->B"}'), '{"code":"graph LR\\n  A-->B","strokes":[]}');
+  assert.equal(parseMermaid('{"code":""}'), '{"code":"","strokes":[]}');
+  // 展示标注被保留，坏点被剔除
+  assert.equal(
+    parseMermaid('{"code":"graph TD","strokes":[{"points":[[1,2],[3,4]],"color":"#e03131","width":2.5},{"points":[[1,"x"]]}]}'),
+    '{"code":"graph TD","strokes":[{"points":[[1,2],[3,4]],"color":"#e03131","width":2.5}]}',
+  );
+  assert.equal(parseMermaid('{"code":123}'), null);
+  assert.equal(parseMermaid('{"text":"graph"}'), null);
+  assert.equal(parseMermaid("[]"), null);
 });
 
 test("viewport messages preserve pan, zoom, center, and peer dimensions", () => {

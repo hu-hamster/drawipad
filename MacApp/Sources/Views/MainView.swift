@@ -91,6 +91,7 @@ struct MainView: View {
                 Button("新建 Excalidraw") { app.addPage() }
                 Button("新建 Canvas") { app.addPage(fileExtension: "canvas") }
                 Button("新建白板") { app.addPage(fileExtension: "whiteboard") }
+                Button("新建 Mermaid") { app.addPage(fileExtension: "mermaid") }
             } label: {
                 Image(systemName: "plus")
                     .frame(width: 28, height: 28)
@@ -110,15 +111,18 @@ struct MainView: View {
             CanvasMacWebView(model: app)
         } else if meta.isWhiteboard {
             WhiteboardMacWebView(model: app)
+        } else if meta.isMermaid {
+            MermaidMacWebView(model: app)
         } else {
             ExcalidrawWebView(model: app)
         }
     }
 
-    /// 画板类型图标：Excalidraw / Canvas / 白板。
+    /// 画板类型图标：Excalidraw / Canvas / 白板 / Mermaid。
     static func pageIcon(_ page: PageMeta) -> String {
         if page.isCanvas { return "rectangle.3.group" }
         if page.isWhiteboard { return "rectangle.on.rectangle" }
+        if page.isMermaid { return "chart.flow" }
         return "scribble.variable"
     }
 
@@ -191,12 +195,13 @@ struct MainView: View {
                 Button("新建 Excalidraw") { app.addPage() }
                 Button("新建 Canvas") { app.addPage(fileExtension: "canvas") }
                 Button("新建白板") { app.addPage(fileExtension: "whiteboard") }
+                Button("新建 Mermaid") { app.addPage(fileExtension: "mermaid") }
             } label: {
                 Image(systemName: "plus.square.on.square")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .help("新建画板、Canvas 或白板")
+            .help("新建画板、Canvas、白板或 Mermaid")
 
             Menu {
                 Button("导入 Excalidraw") { app.importExcalidraw() }
@@ -452,6 +457,10 @@ private struct FolderNodeView: View {
                             expandedFolderIDs.insert(folder.id)
                             app.addPage(in: folder.id, fileExtension: "whiteboard")
                         }
+                        Button("Mermaid") {
+                            expandedFolderIDs.insert(folder.id)
+                            app.addPage(in: folder.id, fileExtension: "mermaid")
+                        }
                     }
                     Divider()
                     Button("重命名目录…") {
@@ -506,6 +515,10 @@ private struct FolderNodeView: View {
                 Button("白板") {
                     expandedFolderIDs.insert(folder.id)
                     app.addPage(in: folder.id, fileExtension: "whiteboard")
+                }
+                Button("Mermaid") {
+                    expandedFolderIDs.insert(folder.id)
+                    app.addPage(in: folder.id, fileExtension: "mermaid")
                 }
             } label: {
                 Image(systemName: "plus")

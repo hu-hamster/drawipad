@@ -139,7 +139,7 @@ final class LibraryStore: ObservableObject {
     }
 
     private func removeSceneFiles(_ pageID: UUID) {
-        for ext in ["excalidraw", "canvas", "whiteboard"] {
+        for ext in ["excalidraw", "canvas", "whiteboard", "mermaid"] {
             try? FileManager.default.removeItem(
                 at: scenesDir.appendingPathComponent(pageID.uuidString + ".\(ext)")
             )
@@ -238,7 +238,8 @@ final class LibraryStore: ObservableObject {
         var index = existingNames.count + 1
         let isCanvas = fileExtension == "canvas"
         let isWhiteboard = fileExtension == "whiteboard"
-        let baseName = name ?? (isCanvas ? "Canvas" : (isWhiteboard ? "白板" : "画板"))
+        let isMermaid = fileExtension == "mermaid"
+        let baseName = name ?? (isCanvas ? "Canvas" : (isWhiteboard ? "白板" : (isMermaid ? "Mermaid" : "画板")))
         var finalName = name ?? "\(baseName) 1"
         while existingNames.contains(finalName) {
             index += 1
@@ -246,7 +247,7 @@ final class LibraryStore: ObservableObject {
         }
         let page = PageMeta(
             name: finalName,
-            fileExtension: isCanvas ? "canvas" : (isWhiteboard ? "whiteboard" : nil)
+            fileExtension: isCanvas ? "canvas" : (isWhiteboard ? "whiteboard" : (isMermaid ? "mermaid" : nil))
         )
         library.pages.append(page)
         let emptyScene: String
@@ -254,6 +255,8 @@ final class LibraryStore: ObservableObject {
             emptyScene = PageMeta.emptyCanvas
         } else if isWhiteboard {
             emptyScene = PageMeta.emptyWhiteboard
+        } else if isMermaid {
+            emptyScene = PageMeta.emptyMermaid
         } else {
             emptyScene = "[]"
         }

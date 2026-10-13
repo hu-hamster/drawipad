@@ -9,10 +9,25 @@ button.danger { color: #a52828; }
 .status.warn { color: #a56a14; }
 .workspace { display: flex; width: 100%; height: calc(100% - 52px); }
 .sidebar { width: 300px; box-sizing: border-box; padding: 16px 10px; border-right: 1px solid #deded9; background: #fbfbf9; overflow: auto; }
+/* 侧边栏右缘拖拽条：向左收窄、向右最多恢复到默认宽度 */
+#sidebar-resizer {
+  flex: none;
+  width: 7px;
+  margin-left: -4px;
+  z-index: 20;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+#sidebar-resizer:hover, #sidebar-resizer.active { background: #6965db33; }
+/* 拖拽期间屏蔽 iframe，防止鼠标移进画布后事件被吞 */
+body.sidebar-resizing iframe { pointer-events: none; }
+body.sidebar-resizing { cursor: col-resize; }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 12px; }
 .sidebar-title { font-size: 14px; font-weight: 700; }
 .icon-button { border: 0; background: transparent; font-size: 20px; padding: 3px 8px; }
-.tree { display: grid; gap: 3px; min-width: 240px; }
+/* 拖窄后名称省略号收尾，不再撑出最小宽度 */
+.tree { display: grid; gap: 3px; min-width: 0; }
 .folder-node { min-width: 0; }
 .folder-row, .page-row { min-height: 32px; display: flex; align-items: center; gap: 2px; border-radius: 7px; }
 .folder-row.selected, .page-row.selected { background: #dcecff; }

@@ -1,4 +1,4 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
+import { FileView, TFile, WorkspaceLeaf } from "obsidian";
 
 export const WHITEBOARD_VIEW_TYPE = "drawpad-whiteboard";
 
@@ -14,15 +14,17 @@ export interface WhiteboardViewCallbacks {
   onReady(view: WhiteboardView): void;
   onSceneChange(view: WhiteboardView, docJSON: string): void;
   onViewport(view: WhiteboardView, viewport: WhiteboardViewport, zoomChanged: boolean): void;
+  onFileLoaded(view: WhiteboardView): void;
 }
 
 /**
  * 白板编辑视图：iframe 加载插件目录内的 whiteboard.html
  * （内嵌 Excalidraw 分页编辑器），通过 postMessage 双向通信，
  * 协议与 Canvas 编辑器一致（drawpadCanvas / drawpadCanvasCommand）。
+ * 继承 FileView：onLoadFile 是文件绑定唯一可靠的入口（ItemView 下不会被调用）。
  */
-export class WhiteboardView extends ItemView {
-  file: TFile | null = null;
+export class WhiteboardView extends FileView {
+  declare file: TFile | null;
   private iframe: HTMLIFrameElement | null = null;
   private ready = false;
   private pendingScene: string | null = null;
@@ -39,6 +41,10 @@ export class WhiteboardView extends ItemView {
     return WHITEBOARD_VIEW_TYPE;
   }
 
+  canAcceptExtension(extension: string): boolean {
+    return extension === "whiteboard";
+  }
+
   getDisplayText(): string {
     return this.file?.basename ?? "白板";
   }
@@ -47,13 +53,17 @@ export class WhiteboardView extends ItemView {
     return "rectangle-on-rectangle";
   }
 
-  setFile(file: TFile): void {
+  async onLoadFile(file: TFile): Promise<void> {
     this.file = file;
-    this.app.workspace.requestSaveLayout?.();
+    if (this.ready) {
+      this.callbacks.onFileLoaded(this);
+    }
   }
 
-  async onLoadFile(file: TFile): Promise<void> {
-    this.setFile(file);
+  async onUnloadFile(file: TFile): Promise<void> {
+    if (this.file?.path === file.path) this.file = null;
+    this.ready = false;
+    this.pendingScene = null;
   }
 
   get content(): HTMLElement {
@@ -90,6 +100,8 @@ export class WhiteboardView extends ItemView {
         const scene = this.pendingScene;
         this.pendingScene = null;
         this.applyScene(scene);
+      } else if (this.file) {
+        this.callbacks.onFileLoaded(this);
       }
       return;
     }

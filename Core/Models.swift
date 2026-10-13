@@ -61,6 +61,7 @@ public struct PageMeta: Codable, Identifiable, Equatable, Hashable, Sendable {
         switch fileExtension {
         case "canvas": return "canvas"
         case "whiteboard": return "whiteboard"
+        case "mermaid": return "mermaid"
         default: return "excalidraw"
         }
     }
@@ -69,10 +70,15 @@ public struct PageMeta: Codable, Identifiable, Equatable, Hashable, Sendable {
 
     public var isWhiteboard: Bool { documentExtension == "whiteboard" }
 
+    public var isMermaid: Bool { documentExtension == "mermaid" }
+
     public static let emptyCanvas = "{\"nodes\":[],\"edges\":[]}"
 
     /// 空白板：一页（空 Excalidraw 元素数组）。页面固定 1600×1200，由前端隐式约定。
     public static let emptyWhiteboard = "{\"pages\":[[]],\"currentPage\":0}"
+
+    /// 空 Mermaid 文档：没有代码。
+    public static let emptyMermaid = "{\"code\":\"\"}"
 }
 
 /// 传输用的项目树快照（页面的显示顺序由 Folder.pageIDs 决定）。

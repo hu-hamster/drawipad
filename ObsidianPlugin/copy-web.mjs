@@ -1,4 +1,4 @@
-// 把 SharedWeb 的白板编辑器（whiteboard.html + Excalidraw vendor 资产）
+// 把 SharedWeb 的白板/Mermaid 编辑器（whiteboard.html / mermaid.html + vendor 资产）
 // 复制到插件构建目录（与 main.js 同级），运行时通过 app://local 在 iframe 中加载。
 // 安装插件时需连同这些文件一起复制到 Vault 的插件目录。
 import { cpSync, existsSync, rmSync } from "node:fs";
@@ -13,13 +13,19 @@ if (!existsSync(resolve(sharedRoot, "whiteboard.html"))) {
   console.error("缺少 SharedWeb/whiteboard.html");
   process.exit(1);
 }
+if (!existsSync(resolve(sharedRoot, "mermaid.html"))) {
+  console.error("缺少 SharedWeb/mermaid.html");
+  process.exit(1);
+}
 
 const vendorFiles = [
   "excalidraw.production.min.js",
   "excalidraw.production.min.css",
+  "mermaid.bundle.js",
 ];
 
 cpSync(resolve(sharedRoot, "whiteboard.html"), resolve(outDir, "whiteboard.html"));
+cpSync(resolve(sharedRoot, "mermaid.html"), resolve(outDir, "mermaid.html"));
 for (const file of vendorFiles) {
   cpSync(resolve(sharedRoot, "vendor", file), resolve(outDir, "vendor", file));
 }
@@ -30,4 +36,4 @@ cpSync(
   { recursive: true },
 );
 
-console.log("已复制白板 Web 资产（whiteboard.html + vendor/）");
+console.log("已复制 Web 资产（whiteboard.html + mermaid.html + vendor/）");

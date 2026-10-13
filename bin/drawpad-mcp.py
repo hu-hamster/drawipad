@@ -120,6 +120,15 @@ TOOLS = [
 ]
 
 
+def _parse_scene_arg(raw):
+    """set_scene 输入兼容：合法 JSON（元素数组 / {"code": ...}）原样解析；
+    纯文本（如 Mermaid 代码）不解析，直接以字符串传给 HTTP 接口。"""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
 def call_tool(name: str, arguments: dict) -> str:
     if name == "drawpad_status":
         return json.dumps(api("GET", "/api/health"), ensure_ascii=False)
@@ -132,7 +141,7 @@ def call_tool(name: str, arguments: dict) -> str:
     if name == "drawpad_set_scene":
         return json.dumps(
             api("PUT", f'/api/boards/{arguments["board"]}/scene',
-                {"elements": json.loads(arguments["elements"])}), ensure_ascii=False)
+                {"elements": _parse_scene_arg(arguments["elements"])}), ensure_ascii=False)
     if name == "drawpad_add_elements":
         return json.dumps(
             api("POST", f'/api/boards/{arguments["board"]}/elements',
